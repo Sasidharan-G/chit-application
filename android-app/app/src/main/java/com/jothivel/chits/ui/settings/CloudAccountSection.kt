@@ -34,14 +34,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jothivel.chits.R
-import com.jothivel.chits.data.firebase.AdminPin
 import com.jothivel.chits.data.firebase.CloudAccount
 import com.jothivel.chits.data.firebase.FirebaseSetup
-import com.jothivel.chits.utils.AppPreferences
 import com.jothivel.chits.ui.components.ConfirmBottomSheet
 import com.jothivel.chits.ui.components.PremiumInputField
 import com.jothivel.chits.ui.theme.AccentGreen
@@ -54,10 +51,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Settings row where the admin connects this device to the shared Firebase project with the admin
- * email and the app's own login PIN (the cloud password follows the PIN - see [AdminPin]). An account
- * still on the separate password it was created with asks for that once and is moved to the PIN.
- * Without a connection, cloud sync, restore and labour management do nothing.
+ * Settings row where the admin connects this device to the shared Firebase project. Only the admin
+ * email is typed; the cloud password is the one built into the app (see [CloudAccount]), so the app
+ * never asks for it and never changes it. Without a connection, cloud sync, restore and labour
+ * management do nothing.
  */
 @Composable
 fun CloudAccountSection() {
@@ -88,14 +85,8 @@ fun CloudAccountSection() {
 
     if (showSheet) {
         var emailInput by remember { mutableStateOf(email.orEmpty()) }
-        var pinInput by remember { mutableStateOf("") }
-        // Only asked when the account still has the separate password it was created with.
-        var askOldPassword by remember { mutableStateOf(false) }
-        var oldPasswordInput by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
-        val wrongPinText = stringResource(R.string.cloud_account_pin_wrong)
-        val oldPasswordNeededText = stringResource(R.string.cloud_account_old_password_needed)
-        val notMovedTemplate = stringResource(R.string.cloud_account_password_not_moved)
+        val noPasswordText = stringResource(R.string.cloud_account_no_password)
         ConfirmBottomSheet(
             show = true,
             onDismiss = { showSheet = false },
@@ -103,60 +94,35 @@ fun CloudAccountSection() {
             message = stringResource(R.string.cloud_account_hint),
             confirmLabel = stringResource(R.string.cloud_account_connect),
             cancelLabel = stringResource(R.string.common_cancel),
-            confirmEnabled = !busy && emailInput.isNotBlank() && pinInput.length == 4 && (!askOldPassword || oldPasswordInput.length >= 6),
+            confirmEnabled = !busy && emailInput.isNotBlank(),
             onConfirm = {
-                busy = true
-                scope.launch {
-                    if (!withContext(Dispatchers.IO) { AppPreferences(context).verifyPin(pinInput) }) {
-                        busy = false
-                        Toast.makeText(context, wrongPinText, Toast.LENGTH_LONG).show()
-                        return@launch
-                    }
-                    val usingOldPassword = askOldPassword && oldPasswordInput.isNotBlank()
-                    val result = withContext(Dispatchers.IO) {
-                        CloudAccount.save(context, emailInput, if (usingOldPassword) oldPasswordInput else AdminPin.cloudPassword(pinInput))
-                        FirebaseSetup.connectAdmin(context)
-                    }
-                    when (result) {
-                        is FirebaseSetup.AdminSignIn.Connected -> {
-                            // Signed in with the old password: from now on the login PIN is the password.
-                            val moved = !usingOldPassword || withContext(Dispatchers.IO) { AdminPin.alignCloudPassword(context, pinInput) }
-                            busy = false
-                            Toast.makeText(context, if (moved) connectedToast else notMovedTemplate, Toast.LENGTH_LONG).show()
-                            showSheet = false
-                            refreshKey++
+                if (!CloudAccount.hasPassword()) {
+                    Toast.makeText(context, noPasswordText, Toast.LENGTH_LONG).show()
+                } else {
+                    busy = true
+                    scope.launch {
+                        val result = withContext(Dispatchers.IO) {
+                            CloudAccount.save(context, emailInput)
+                            FirebaseSetup.connectAdmin(context)
                         }
-                        is FirebaseSetup.AdminSignIn.Failed -> {
-                            busy = false
-                            withContext(Dispatchers.IO) { CloudAccount.clear(context) }
-                            if (result.wrongPassword && !usingOldPassword) {
-                                askOldPassword = true
-                                Toast.makeText(context, oldPasswordNeededText, Toast.LENGTH_LONG).show()
-                            } else {
+                        busy = false
+                        when (result) {
+                            is FirebaseSetup.AdminSignIn.Connected -> {
+                                Toast.makeText(context, connectedToast, Toast.LENGTH_SHORT).show()
+                                showSheet = false
+                            }
+                            is FirebaseSetup.AdminSignIn.Failed -> {
+                                withContext(Dispatchers.IO) { CloudAccount.clear(context) }
                                 Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
                             }
-                            refreshKey++
+                            FirebaseSetup.AdminSignIn.NotConfigured -> Unit
                         }
-                        FirebaseSetup.AdminSignIn.NotConfigured -> busy = false
+                        refreshKey++
                     }
                 }
             },
             content = {
                 PremiumInputField(emailInput, { emailInput = it.trim() }, stringResource(R.string.cloud_account_email), Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
-                Spacer(Modifier.height(8.dp))
-                PremiumInputField(
-                    pinInput, { if (it.length <= 4 && it.all(Char::isDigit)) pinInput = it }, stringResource(R.string.cloud_account_password), Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                    visualTransformation = PasswordVisualTransformation()
-                )
-                if (askOldPassword) {
-                    Spacer(Modifier.height(8.dp))
-                    PremiumInputField(
-                        oldPasswordInput, { oldPasswordInput = it }, stringResource(R.string.cloud_account_old_password), Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        visualTransformation = PasswordVisualTransformation()
-                    )
-                }
                 if (!email.isNullOrBlank()) TextButton(onClick = {
                     scope.launch {
                         withContext(Dispatchers.IO) { CloudAccount.clear(context); FirebaseSetup.signOut() }

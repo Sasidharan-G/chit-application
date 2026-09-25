@@ -499,14 +499,9 @@
     <string name="cloud_account_title">கிளவுட் கணக்கு</string>
     <string name="cloud_account_not_connected">இணைக்கப்படவில்லை - கிளவுட் ஒத்திசைவும் தொழிலாளர் வசதியும் நிறுத்தத்தில் உள்ளன</string>
     <string name="cloud_account_connected">%1$s ஆக இணைக்கப்பட்டது</string>
-    <string name="cloud_account_hint">நிர்வாகி மின்னஞ்சலையும், இந்த app-இல் உள்நுழைய பயன்படுத்தும் அதே PIN-ஐயும் உள்ளிடவும். Cloud கடவுச்சொல் எப்போதும் உங்கள் login PIN-ஐப் பின்பற்றும் - PIN மாற்றினால் அதுவும் மாறும்.</string>
-    <string name="cloud_account_pin_wrong">இது இந்த app-இன் login PIN அல்ல</string>
-    <string name="cloud_account_old_password">பழைய cloud கடவுச்சொல் (ஒரு முறை மட்டும்)</string>
-    <string name="cloud_account_old_password_needed">இந்த கணக்கில் இன்னும் பழைய cloud கடவுச்சொல் உள்ளது. கீழே ஒரு முறை உள்ளிடவும் - அதன் பிறகு உங்கள் login PIN தான் கடவுச்சொல்.</string>
-    <string name="cloud_account_password_not_moved">இணைக்கப்பட்டது, ஆனால் cloud கடவுச்சொல்லை இன்னும் PIN-ஆக மாற்ற முடியவில்லை. அடுத்த login-இல் மீண்டும் முயற்சிக்கப்படும்.</string>
-    <string name="settings_change_pin_cloud_failed">PIN மாற்றப்படவில்லை: %1$s</string>
+    <string name="cloud_account_hint">நிர்வாகி மின்னஞ்சலை மட்டும் உள்ளிடவும். Cloud கடவுச்சொல் இந்த app-இலேயே உள்ளது.</string>
     <string name="cloud_account_email">நிர்வாகி மின்னஞ்சல்</string>
-    <string name="cloud_account_password">App login PIN</string>
+    <string name="cloud_account_no_password">இந்த build-இல் cloud கடவுச்சொல் இல்லை (cloud.properties இல்லை)</string>
     <string name="cloud_account_connect">இணை</string>
     <string name="cloud_account_disconnect">இந்த போனை துண்டி</string>
     <string name="cloud_account_ok">கிளவுட் கணக்கு இணைக்கப்பட்டது</string>

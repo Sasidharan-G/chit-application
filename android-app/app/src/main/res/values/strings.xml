@@ -499,14 +499,9 @@
     <string name="cloud_account_title">Cloud account</string>
     <string name="cloud_account_not_connected">Not connected - cloud sync and labour are off</string>
     <string name="cloud_account_connected">Connected as %1$s</string>
-    <string name="cloud_account_hint">Enter the admin email and the same PIN you use to log in to this app. The cloud password always follows your login PIN - changing the PIN changes it too.</string>
+    <string name="cloud_account_hint">Enter the admin email. The cloud password is already built into this app.</string>
     <string name="cloud_account_email">Admin email</string>
-    <string name="cloud_account_password">App login PIN</string>
-    <string name="cloud_account_pin_wrong">That is not this app\'s login PIN</string>
-    <string name="cloud_account_old_password">Old cloud password (one time only)</string>
-    <string name="cloud_account_old_password_needed">This account still has its old cloud password. Enter it once below - after that your login PIN is the password.</string>
-    <string name="cloud_account_password_not_moved">Connected, but the cloud password could not be changed to your PIN yet. It will be retried at your next login.</string>
-    <string name="settings_change_pin_cloud_failed">PIN not changed: %1$s</string>
+    <string name="cloud_account_no_password">This build has no cloud password (cloud.properties is missing)</string>
     <string name="cloud_account_connect">Connect</string>
     <string name="cloud_account_disconnect">Disconnect this phone</string>
     <string name="cloud_account_ok">Cloud account connected</string>

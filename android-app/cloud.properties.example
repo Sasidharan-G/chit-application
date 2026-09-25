@@ -1,0 +1,4 @@
+# Copy to cloud.properties (git-ignored). This is the password of the admin's Firebase Auth account:
+# the account created in Firebase console > Authentication > Users. The app signs in with it; it is
+# compiled into the APK, so it is deliberately not kept in the source tree.
+cloudPassword=CHANGE_ME

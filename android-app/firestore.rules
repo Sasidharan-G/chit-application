@@ -56,6 +56,30 @@ service cloud.firestore {
       allow list, write: if false;
     }
 
+    // ---- sessions: one live login per account -------------------------------------------------
+    // `sessions/{uid}` names the phone that is logged in as that admin / agent and when it last checked in.
+    // Only the account itself (an admin, or an active agent) may read, write or delete its own record; the
+    // client refuses a second phone while the record is live (see SessionGuard in the app).
+    match /sessions/{uid} {
+      function ownsSession() {
+        return signedIn() && request.auth.uid == uid && (isAdmin() || isActiveAgent());
+      }
+
+      allow get: if ownsSession();
+      allow list: if false;
+
+      allow create, update: if ownsSession()
+        && request.resource.data.keys().hasOnly(['deviceId', 'deviceName', 'lastSeen'])
+        && request.resource.data.keys().hasAll(['deviceId', 'lastSeen'])
+        && request.resource.data.deviceId is string
+        && request.resource.data.deviceId.size() > 0
+        && request.resource.data.deviceId.size() <= 64
+        && (!('deviceName' in request.resource.data) || (request.resource.data.deviceName is string && request.resource.data.deviceName.size() <= 80))
+        && request.resource.data.lastSeen == request.time;
+
+      allow delete: if ownsSession();
+    }
+
     // ---- agents -----------------------------------------------------------------------------
     // Admin manages them; an agent reads only their own document (no PIN hash is stored here).
     match /agents/{agentId} {

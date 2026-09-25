@@ -6,8 +6,12 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.jothivel.chits.R
+import com.jothivel.chits.data.firebase.SessionGuard
+import kotlinx.coroutines.delay
 import com.jothivel.chits.ui.base.BaseActivity
 import com.jothivel.chits.ui.settings.CsvImportActivity
 import com.jothivel.chits.ui.theme.JothiVelChitsTheme
@@ -86,6 +90,7 @@ class MainHostActivity : BaseActivity() {
             com.jothivel.chits.data.firebase.FirebaseSyncService.start(this)
         }
 
+        startSessionHeartbeat()
         showMainContent()
     }
 
@@ -117,27 +122,50 @@ class MainHostActivity : BaseActivity() {
         com.jothivel.chits.data.firebase.FirebaseSyncService.stop()
     }
 
+    // One login, one phone (see SessionGuard): while the app is on screen this phone checks in every
+    // minute. If another phone has taken the account over in the meantime, this one is logged out.
+    private fun startSessionHeartbeat() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    val beat = withContext(Dispatchers.IO) { SessionGuard.heartbeat(applicationContext) }
+                    if (beat is SessionGuard.Beat.Lost) {
+                        logout(releaseSession = false, message = beat.message)
+                        break
+                    }
+                    delay(SessionGuard.HEARTBEAT_MS)
+                }
+            }
+        }
+    }
+
+    private fun logout(releaseSession: Boolean, message: String? = null) {
+        // Agent sessions cache identity + PIN hash + assigned groups locally so login still works
+        // offline (see AppPreferences.saveAgentSession) - a logout must wipe that cache, or the next
+        // person to use this device could still see the previous agent's name/phone/assigned groups,
+        // and a deactivated agent could keep logging back in offline via the stale cache.
+        com.jothivel.chits.utils.AppPreferences(this).clearAgentSession()
+        com.jothivel.chits.ui.auth.LoginActivity.isSessionActive = false
+        lifecycleScope.launch {
+            // Free the account for other phones first (needs the sign-in), then leave Firebase so the
+            // next person on this device never inherits this session.
+            withContext(Dispatchers.IO) {
+                if (releaseSession) SessionGuard.release(applicationContext)
+                com.jothivel.chits.data.firebase.FirebaseSetup.signOut()
+            }
+            if (message != null) Toast.makeText(applicationContext, message, Toast.LENGTH_LONG).show()
+            startActivity(Intent(this@MainHostActivity, com.jothivel.chits.ui.auth.LoginActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            })
+            finish()
+        }
+    }
+
     private fun showMainContent() {
         setContent {
             JothiVelChitsTheme {
                 MainHostScreen(
-                    onLogout = {
-                        // Agent sessions cache identity + PIN hash + assigned groups locally so
-                        // login still works offline (see AppPreferences.saveAgentSession) - an
-                        // explicit Logout must wipe that cache, same as the admin PIN-login path
-                        // already does in LoginViewModel, or the next person to use this device
-                        // could still see the previous agent's name/phone/assigned groups, and a
-                        // deactivated agent could keep logging back in offline via the stale cache.
-                        com.jothivel.chits.utils.AppPreferences(this@MainHostActivity).clearAgentSession()
-                        // Leave Firebase too, so the next person on this device never inherits this session.
-                        com.jothivel.chits.data.firebase.FirebaseSetup.signOut()
-                        com.jothivel.chits.ui.auth.LoginActivity.isSessionActive = false
-                        val intent = Intent(this@MainHostActivity, com.jothivel.chits.ui.auth.LoginActivity::class.java).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                        }
-                        startActivity(intent)
-                        finish()
-                    },
+                    onLogout = { logout(releaseSession = true) },
                     onBackupDatabase = {
                         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
                         backupDbLauncher.launch("ChitsBackup_$timestamp.db")

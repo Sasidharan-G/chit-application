@@ -78,14 +78,19 @@ public class LoginViewModel extends AndroidViewModel {
         PIN_CHECK.execute(() -> {
             if (appPreferences.verifyPin(pin)) {
                 appPreferences.clearAdminPinFailures();
-                // Automatically set admin setup to true so session skipping works
-                appPreferences.setAdminSetup(true);
-                // See setupAdminProfile() above: clear any stale agent session so the app routes
-                // to the admin flow, not the last-used Labour session's role.
-                appPreferences.clearAgentSession();
-                // The login PIN is also the Cloud account password; move an older separate password over.
-                com.jothivel.chits.data.firebase.AdminPin.alignCloudPasswordInBackground(getApplication(), pin);
-                loginSuccess.postValue(true);
+                // One login, one phone: with a Cloud account connected, refuse this login while the
+                // admin is live on another phone (offline or unreachable cloud never blocks).
+                String blocked = com.jothivel.chits.data.firebase.SessionGuard.adminLoginBlockMessage(getApplication());
+                if (blocked != null) {
+                    fail(blocked);
+                } else {
+                    // Automatically set admin setup to true so session skipping works
+                    appPreferences.setAdminSetup(true);
+                    // See setupAdminProfile() above: clear any stale agent session so the app routes
+                    // to the admin flow, not the last-used Labour session's role.
+                    appPreferences.clearAgentSession();
+                    loginSuccess.postValue(true);
+                }
             } else {
                 appPreferences.recordAdminPinFailure();
                 fail("Wrong PIN. Try again.");

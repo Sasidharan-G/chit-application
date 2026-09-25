@@ -79,6 +79,42 @@ describe('nobody gets in without a real role', () => {
   });
 });
 
+describe('sessions (one live login per account)', () => {
+  const session = over => ({ deviceId: 'phone-A', deviceName: 'Redmi Note 9', lastSeen: serverTimestamp(), ...over });
+
+  it('lets the admin and an active agent manage only their own session record', async () => {
+    await assertSucceeds(setDoc(doc(db(ADMIN), 'sessions', ADMIN), session()));
+    await assertSucceeds(getDoc(doc(db(ADMIN), 'sessions', ADMIN)));
+    await assertSucceeds(setDoc(doc(db(AG1), 'sessions', AG1), session()));
+    await assertSucceeds(updateDoc(doc(db(AG1), 'sessions', AG1), { deviceId: 'phone-B', lastSeen: serverTimestamp() }));
+    await assertSucceeds(deleteDoc(doc(db(AG1), 'sessions', AG1)));
+  });
+
+  it('never lets one account read, overwrite or delete another account\'s session', async () => {
+    await env.withSecurityRulesDisabled(async ctx => { await setDoc(doc(ctx.firestore(), 'sessions', AG2), session()); });
+    await assertFails(getDoc(doc(db(AG1), 'sessions', AG2)));
+    await assertFails(setDoc(doc(db(AG1), 'sessions', AG2), session({ deviceId: 'thief' })));
+    await assertFails(deleteDoc(doc(db(AG1), 'sessions', AG2)));
+    await assertFails(getDoc(doc(db(ADMIN), 'sessions', AG2)));
+    await assertFails(getDocs(collection(db(ADMIN), 'sessions')));
+  });
+
+  it('refuses strangers, deactivated agents and signed-out clients', async () => {
+    await assertFails(setDoc(doc(db(STRANGER), 'sessions', STRANGER), session()));
+    await assertFails(setDoc(doc(db('agent-off'), 'sessions', 'agent-off'), session()));
+    await assertFails(setDoc(doc(anon(), 'sessions', AG1), session()));
+  });
+
+  it('only accepts a well-formed record stamped with the server time', async () => {
+    const ref = () => doc(db(AG1), 'sessions', AG1);
+    await assertFails(setDoc(ref(), session({ lastSeen: new Date(Date.now() + 86400000) })));
+    await assertFails(setDoc(ref(), session({ deviceId: '' })));
+    await assertFails(setDoc(ref(), session({ deviceId: 'x'.repeat(65) })));
+    await assertFails(setDoc(ref(), session({ role: 'ADMIN' })));
+    await assertFails(setDoc(ref(), { deviceName: 'no device id', lastSeen: serverTimestamp() }));
+    await assertSucceeds(setDoc(ref(), session()));
+  });
+});
 describe('agents (labour accounts)', () => {
   it('lets an agent read only their own agent document', async () => {
     await assertSucceeds(getDoc(doc(db(AG1), 'agents', AG1)));

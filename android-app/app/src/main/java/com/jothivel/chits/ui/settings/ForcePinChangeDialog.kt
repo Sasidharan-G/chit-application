@@ -24,9 +24,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.rememberCoroutineScope
 import com.jothivel.chits.R
-import com.jothivel.chits.data.firebase.AdminPin
 import com.jothivel.chits.ui.theme.AccentRed
 import com.jothivel.chits.ui.theme.MaroonPrimary
+import com.jothivel.chits.utils.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -100,14 +100,9 @@ fun ForcePinChangeDialog(onDone: () -> Unit) {
                         else -> {
                             saving = true
                             scope.launch {
-                                // Same path as Settings > Change PIN, so a connected Cloud account follows the PIN.
-                                val result = withContext(Dispatchers.IO) { AdminPin.changePin(context, "1234", newPin) }
+                                val changed = withContext(Dispatchers.IO) { AppPreferences(context).changePin("1234", newPin) }
                                 saving = false
-                                when (result) {
-                                    AdminPin.ChangeResult.Changed -> onDone()
-                                    is AdminPin.ChangeResult.CloudFailed -> error = context.getString(R.string.settings_change_pin_cloud_failed, result.message)
-                                    else -> error = errFailed
-                                }
+                                if (changed) onDone() else error = errFailed
                             }
                         }
                     }

@@ -4,20 +4,20 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.jothivel.chits.BuildConfig
 
 /**
- * The admin's Firebase Auth email + password, kept in EncryptedSharedPreferences only (never in a
- * plain preferences file; if the encrypted store cannot be opened the credentials live in memory for
- * this process). The admin app signs in with them to reach Firestore - the old anonymous sign-in gave
- * every APK the same access as the admin.
+ * The admin's Firebase Auth account. The email is typed once in Settings and kept in
+ * EncryptedSharedPreferences (in memory for this process if the encrypted store cannot be opened).
+ * The password is the shared one built into the app ([BuildConfig.CLOUD_PASSWORD], from the git-ignored
+ * cloud.properties) - the app never asks for it and never changes it. The admin app signs in with them
+ * to reach Firestore; the old anonymous sign-in gave every APK the same access as the admin.
  */
 object CloudAccount {
     private const val FILE = "JvcCloudAccountSecure"
     private const val KEY_EMAIL = "email"
-    private const val KEY_PASSWORD = "password"
 
     @Volatile private var memoryEmail: String? = null
-    @Volatile private var memoryPassword: String? = null
     @Volatile private var cached: SharedPreferences? = null
     @Volatile private var triedOpen = false
 
@@ -46,21 +46,23 @@ object CloudAccount {
     }
 
     fun email(context: Context): String? = prefs(context)?.getString(KEY_EMAIL, null) ?: memoryEmail
-    fun password(context: Context): String? = prefs(context)?.getString(KEY_PASSWORD, null) ?: memoryPassword
-    fun isConfigured(context: Context): Boolean = !email(context).isNullOrBlank() && !password(context).isNullOrBlank()
 
-    fun save(context: Context, email: String, password: String) {
+    /** The shared cloud password; blank when this build was made without cloud.properties. */
+    fun password(@Suppress("UNUSED_PARAMETER") context: Context): String = BuildConfig.CLOUD_PASSWORD
+
+    /** False when the build has no cloud password - cloud features cannot work then. */
+    fun hasPassword(): Boolean = BuildConfig.CLOUD_PASSWORD.isNotBlank()
+
+    fun isConfigured(context: Context): Boolean = !email(context).isNullOrBlank() && hasPassword()
+
+    fun save(context: Context, email: String) {
         val p = prefs(context)
-        if (p != null) p.edit().putString(KEY_EMAIL, email.trim()).putString(KEY_PASSWORD, password).apply()
-        else {
-            memoryEmail = email.trim()
-            memoryPassword = password
-        }
+        if (p != null) p.edit().putString(KEY_EMAIL, email.trim()).apply()
+        else memoryEmail = email.trim()
     }
 
     fun clear(context: Context) {
         memoryEmail = null
-        memoryPassword = null
         prefs(context)?.edit()?.clear()?.apply()
     }
 }

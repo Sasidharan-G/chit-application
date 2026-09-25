@@ -98,6 +98,12 @@ object AgentAuthRepository {
                     auth.signOut()
                     return AgentLoginResult.Failure("Your account has been disconnected. Contact admin.")
                 }
+                // One login, one phone: refuse while another phone is live on this agent (see SessionGuard).
+                val claim = SessionGuard.claim(context)
+                if (claim is SessionGuard.Claim.Blocked) {
+                    auth.signOut()
+                    return AgentLoginResult.Failure(claim.message)
+                }
                 val name = doc.getString(FirestoreSchema.Agent.NAME).orEmpty()
                 @Suppress("UNCHECKED_CAST")
                 val assignedGroups = (doc.get(FirestoreSchema.Agent.ASSIGNED_GROUPS) as? List<String>).orEmpty()

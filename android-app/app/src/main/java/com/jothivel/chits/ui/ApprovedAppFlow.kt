@@ -2947,17 +2947,13 @@ private fun ChangePinSection() {
                             else -> {
                                 saving = true
                                 scope.launch {
-                                    val result = withContext(Dispatchers.IO) { com.jothivel.chits.data.firebase.AdminPin.changePin(context, currentPin, newPin) }
+                                    // The PIN only opens this app on this phone (the cloud password is separate).
+                                    val changed = withContext(Dispatchers.IO) { com.jothivel.chits.utils.AppPreferences(context).changePin(currentPin, newPin) }
                                     saving = false
-                                    when (result) {
-                                        com.jothivel.chits.data.firebase.AdminPin.ChangeResult.Changed -> {
-                                            android.widget.Toast.makeText(context, changedToast, android.widget.Toast.LENGTH_SHORT).show()
-                                            close()
-                                        }
-                                        com.jothivel.chits.data.firebase.AdminPin.ChangeResult.WrongCurrentPin -> error = context.getString(R.string.settings_change_pin_error_wrong)
-                                        com.jothivel.chits.data.firebase.AdminPin.ChangeResult.InvalidNewPin -> error = context.getString(R.string.settings_change_pin_error_new)
-                                        is com.jothivel.chits.data.firebase.AdminPin.ChangeResult.CloudFailed -> error = context.getString(R.string.settings_change_pin_cloud_failed, result.message)
-                                    }
+                                    if (changed) {
+                                        android.widget.Toast.makeText(context, changedToast, android.widget.Toast.LENGTH_SHORT).show()
+                                        close()
+                                    } else error = context.getString(R.string.settings_change_pin_error_wrong)
                                 }
                             }
                         }

@@ -69,8 +69,7 @@ object FirebaseSetup {
     sealed class AdminSignIn {
         object Connected : AdminSignIn()
         object NotConfigured : AdminSignIn()
-        /** [wrongPassword] is true when Firebase rejected the email/password pair itself. */
-        data class Failed(val message: String, val wrongPassword: Boolean = false) : AdminSignIn()
+        data class Failed(val message: String) : AdminSignIn()
     }
 
     /**
@@ -81,7 +80,7 @@ object FirebaseSetup {
         val firestore = firestoreOrNull(context) ?: return AdminSignIn.Failed("Firebase is not configured on this install.")
         val email = CloudAccount.email(context)
         val password = CloudAccount.password(context)
-        if (email.isNullOrBlank() || password.isNullOrBlank()) return AdminSignIn.NotConfigured
+        if (email.isNullOrBlank() || password.isBlank()) return AdminSignIn.NotConfigured
         val auth = FirebaseAuth.getInstance()
         return try {
             var user = auth.currentUser
@@ -107,7 +106,7 @@ object FirebaseSetup {
         } catch (e: FirebaseAuthInvalidUserException) {
             AdminSignIn.Failed("No account with this email exists.")
         } catch (e: FirebaseAuthInvalidCredentialsException) {
-            AdminSignIn.Failed("Wrong email or PIN.", wrongPassword = true)
+            AdminSignIn.Failed("Wrong email or cloud password.")
         } catch (e: FirebaseTooManyRequestsException) {
             AdminSignIn.Failed("Too many attempts. Try again in a few minutes.")
         } catch (e: FirebaseNetworkException) {
