@@ -14,15 +14,6 @@ if (keystorePropsFile.exists()) {
     keystorePropsFile.withInputStream { keystoreProps.load(it) }
 }
 
-// The admin's shared Firebase password lives in android-app/cloud.properties (git-ignored, see
-// cloud.properties.example) and is compiled in as BuildConfig.CLOUD_PASSWORD - never in source.
-def cloudPropsFile = rootProject.file('cloud.properties')
-def cloudProps = new Properties()
-if (cloudPropsFile.exists()) {
-    cloudPropsFile.withInputStream { cloudProps.load(it) }
-}
-def cloudPassword = (cloudProps.getProperty('cloudPassword') ?: '').trim().replace('\\', '\\\\').replace('"', '\\"')
-
 android {
     namespace 'com.jothivel.chits'
     compileSdk 34
@@ -33,7 +24,6 @@ android {
         targetSdk 34
         versionCode 2
         versionName "1.1"
-        buildConfigField "String", "CLOUD_PASSWORD", "\"${cloudPassword}\""
 
         // Room exports its schema JSON here so every released database version is kept in git and
         // migrations can be verified against the real previous schema (see MigrationTest).

@@ -80,7 +80,7 @@ object FirebaseSetup {
         val firestore = firestoreOrNull(context) ?: return AdminSignIn.Failed("Firebase is not configured on this install.")
         val email = CloudAccount.email(context)
         val password = CloudAccount.password(context)
-        if (email.isNullOrBlank() || password.isBlank()) return AdminSignIn.NotConfigured
+        if (email.isNullOrBlank() || password.isNullOrBlank()) return AdminSignIn.NotConfigured
         val auth = FirebaseAuth.getInstance()
         return try {
             var user = auth.currentUser
@@ -106,7 +106,7 @@ object FirebaseSetup {
         } catch (e: FirebaseAuthInvalidUserException) {
             AdminSignIn.Failed("No account with this email exists.")
         } catch (e: FirebaseAuthInvalidCredentialsException) {
-            AdminSignIn.Failed("Wrong email or cloud password.")
+            AdminSignIn.Failed("Wrong email or password.")
         } catch (e: FirebaseTooManyRequestsException) {
             AdminSignIn.Failed("Too many attempts. Try again in a few minutes.")
         } catch (e: FirebaseNetworkException) {

@@ -34,6 +34,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jothivel.chits.R
@@ -51,10 +52,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Settings row where the admin connects this device to the shared Firebase project. Only the admin
- * email is typed; the cloud password is the one built into the app (see [CloudAccount]), so the app
- * never asks for it and never changes it. Without a connection, cloud sync, restore and labour
- * management do nothing.
+ * Settings row where the admin connects this device to the shared Firebase project with the admin
+ * email + password created in the Firebase console. Every new phone has to be given both - no password
+ * is built into the app, and the app never changes it. Without a connection, cloud sync, restore and
+ * labour management do nothing.
  */
 @Composable
 fun CloudAccountSection() {
@@ -85,8 +86,8 @@ fun CloudAccountSection() {
 
     if (showSheet) {
         var emailInput by remember { mutableStateOf(email.orEmpty()) }
+        var passwordInput by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
-        val noPasswordText = stringResource(R.string.cloud_account_no_password)
         ConfirmBottomSheet(
             show = true,
             onDismiss = { showSheet = false },
@@ -94,35 +95,37 @@ fun CloudAccountSection() {
             message = stringResource(R.string.cloud_account_hint),
             confirmLabel = stringResource(R.string.cloud_account_connect),
             cancelLabel = stringResource(R.string.common_cancel),
-            confirmEnabled = !busy && emailInput.isNotBlank(),
+            confirmEnabled = !busy && emailInput.isNotBlank() && passwordInput.length >= 6,
             onConfirm = {
-                if (!CloudAccount.hasPassword()) {
-                    Toast.makeText(context, noPasswordText, Toast.LENGTH_LONG).show()
-                } else {
-                    busy = true
-                    scope.launch {
-                        val result = withContext(Dispatchers.IO) {
-                            CloudAccount.save(context, emailInput)
-                            FirebaseSetup.connectAdmin(context)
-                        }
-                        busy = false
-                        when (result) {
-                            is FirebaseSetup.AdminSignIn.Connected -> {
-                                Toast.makeText(context, connectedToast, Toast.LENGTH_SHORT).show()
-                                showSheet = false
-                            }
-                            is FirebaseSetup.AdminSignIn.Failed -> {
-                                withContext(Dispatchers.IO) { CloudAccount.clear(context) }
-                                Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
-                            }
-                            FirebaseSetup.AdminSignIn.NotConfigured -> Unit
-                        }
-                        refreshKey++
+                busy = true
+                scope.launch {
+                    val result = withContext(Dispatchers.IO) {
+                        CloudAccount.save(context, emailInput, passwordInput)
+                        FirebaseSetup.connectAdmin(context)
                     }
+                    busy = false
+                    when (result) {
+                        is FirebaseSetup.AdminSignIn.Connected -> {
+                            Toast.makeText(context, connectedToast, Toast.LENGTH_SHORT).show()
+                            showSheet = false
+                        }
+                        is FirebaseSetup.AdminSignIn.Failed -> {
+                            withContext(Dispatchers.IO) { CloudAccount.clear(context) }
+                            Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                        }
+                        FirebaseSetup.AdminSignIn.NotConfigured -> Unit
+                    }
+                    refreshKey++
                 }
             },
             content = {
                 PremiumInputField(emailInput, { emailInput = it.trim() }, stringResource(R.string.cloud_account_email), Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
+                Spacer(Modifier.height(8.dp))
+                PremiumInputField(
+                    passwordInput, { passwordInput = it }, stringResource(R.string.cloud_account_password), Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    visualTransformation = PasswordVisualTransformation()
+                )
                 if (!email.isNullOrBlank()) TextButton(onClick = {
                     scope.launch {
                         withContext(Dispatchers.IO) { CloudAccount.clear(context); FirebaseSetup.signOut() }

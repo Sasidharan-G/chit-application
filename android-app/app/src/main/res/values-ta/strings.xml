@@ -499,9 +499,9 @@
     <string name="cloud_account_title">கிளவுட் கணக்கு</string>
     <string name="cloud_account_not_connected">இணைக்கப்படவில்லை - கிளவுட் ஒத்திசைவும் தொழிலாளர் வசதியும் நிறுத்தத்தில் உள்ளன</string>
     <string name="cloud_account_connected">%1$s ஆக இணைக்கப்பட்டது</string>
-    <string name="cloud_account_hint">நிர்வாகி மின்னஞ்சலை மட்டும் உள்ளிடவும். Cloud கடவுச்சொல் இந்த app-இலேயே உள்ளது.</string>
+    <string name="cloud_account_hint">Firebase console-இல் உருவாக்கிய நிர்வாகி மின்னஞ்சல் மற்றும் கடவுச்சொல்லை உள்ளிடவும். அவை இந்த போனில் மறைகுறியாக்கப்பட்டு சேமிக்கப்படும்.</string>
     <string name="cloud_account_email">நிர்வாகி மின்னஞ்சல்</string>
-    <string name="cloud_account_no_password">இந்த build-இல் cloud கடவுச்சொல் இல்லை (cloud.properties இல்லை)</string>
+    <string name="cloud_account_password">கடவுச்சொல்</string>
     <string name="cloud_account_connect">இணை</string>
     <string name="cloud_account_disconnect">இந்த போனை துண்டி</string>
     <string name="cloud_account_ok">கிளவுட் கணக்கு இணைக்கப்பட்டது</string>

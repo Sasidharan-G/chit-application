@@ -499,9 +499,9 @@
     <string name="cloud_account_title">Cloud account</string>
     <string name="cloud_account_not_connected">Not connected - cloud sync and labour are off</string>
     <string name="cloud_account_connected">Connected as %1$s</string>
-    <string name="cloud_account_hint">Enter the admin email. The cloud password is already built into this app.</string>
+    <string name="cloud_account_hint">Enter the admin email and password created in the Firebase console. They are stored encrypted on this phone.</string>
     <string name="cloud_account_email">Admin email</string>
-    <string name="cloud_account_no_password">This build has no cloud password (cloud.properties is missing)</string>
+    <string name="cloud_account_password">Password</string>
     <string name="cloud_account_connect">Connect</string>
     <string name="cloud_account_disconnect">Disconnect this phone</string>
     <string name="cloud_account_ok">Cloud account connected</string>

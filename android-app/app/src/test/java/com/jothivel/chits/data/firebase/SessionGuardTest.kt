@@ -66,12 +66,19 @@ class SessionGuardTest {
         assertEquals(null, SessionGuard.adminLoginBlockMessage(app))
     }
 
-    @Test fun `the cloud password comes from the build, and only the email is stored`() {
+    @Test fun `a new phone has no cloud credentials until the admin types them`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         CloudAccount.clear(app)
-        CloudAccount.save(app, " owner@example.com ")
+        assertEquals(null, CloudAccount.email(app))
+        assertEquals(null, CloudAccount.password(app))
+        assertEquals(false, CloudAccount.isConfigured(app))
+
+        CloudAccount.save(app, " owner@example.com ", "typed-by-admin")
         assertEquals("owner@example.com", CloudAccount.email(app))
-        assertEquals(com.jothivel.chits.BuildConfig.CLOUD_PASSWORD, CloudAccount.password(app))
+        assertEquals("typed-by-admin", CloudAccount.password(app))
+        assertEquals(true, CloudAccount.isConfigured(app))
+
         CloudAccount.clear(app)
+        assertEquals(false, CloudAccount.isConfigured(app))
     }
 }

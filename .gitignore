@@ -44,5 +44,3 @@ Thumbs.db
 android-app/firestore-tests/node_modules/
 android-app/firestore-tests/firestore-debug.log
 *.log
-# Shared Firebase admin password (compiled into BuildConfig)
-android-app/cloud.properties
