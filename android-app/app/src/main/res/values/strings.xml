@@ -509,4 +509,18 @@
     <string name="force_pin_title">Set your own PIN</string>
     <string name="force_pin_message">This phone is still using the default PIN. Choose a new 4-digit PIN before continuing.</string>
     <string name="force_pin_weak">Choose a PIN that is not 1234, 0000 or a repeated/sequential number</string>
+    <string name="host_pin_changed_elsewhere">Your PIN was changed on another phone. Use the new PIN next time.</string>
+    <string name="settings_change_pin_done_cloud">PIN changed and saved to the cloud</string>
+    <string name="settings_change_pin_done_offline">PIN changed on this phone. It will be saved to the cloud when this phone is online.</string>
+    <string name="cloud_account_pin_adopted">Cloud account connected. Your PIN is now the one saved in the cloud.</string>
+    <string name="force_pin_have_account">I already use this app on another phone</string>
+    <string name="force_pin_back_to_new">Choose a new PIN instead</string>
+    <string name="force_pin_existing_title">Use your existing PIN</string>
+    <string name="force_pin_existing_message">Enter the cloud email and password, and the PIN you already use on your other phone.</string>
+    <string name="force_pin_existing_pin">Existing PIN</string>
+    <string name="force_pin_existing_button">Continue</string>
+    <string name="force_pin_existing_fill">Fill in the email, password and existing PIN</string>
+    <string name="force_pin_existing_wrong">Wrong existing PIN</string>
+    <string name="force_pin_existing_none">No PIN is saved in the cloud yet. Choose a new PIN instead.</string>
+    <string name="force_pin_existing_offline">No internet. Connect and try again.</string>
 </resources>

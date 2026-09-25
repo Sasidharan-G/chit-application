@@ -10,6 +10,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jothivel.chits.R
+import com.jothivel.chits.data.firebase.AdminPinSync
 import com.jothivel.chits.data.firebase.SessionGuard
 import kotlinx.coroutines.delay
 import com.jothivel.chits.ui.base.BaseActivity
@@ -28,6 +29,8 @@ class MainHostActivity : BaseActivity() {
 
     private companion object {
         const val IDLE_LOCK_MS = 3 * 60 * 1000L
+        /** The cloud is asked for the shared admin PIN every this many one-minute check-ins. */
+        const val PIN_CHECK_EVERY = 10
     }
 
     private val backupDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/x-sqlite3")) { uri ->
@@ -127,12 +130,22 @@ class MainHostActivity : BaseActivity() {
     private fun startSessionHeartbeat() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
+                var beats = 0
                 while (true) {
                     val beat = withContext(Dispatchers.IO) { SessionGuard.heartbeat(applicationContext) }
                     if (beat is SessionGuard.Beat.Lost) {
                         logout(releaseSession = false, message = beat.message)
                         break
                     }
+                    // Admin only: keep the admin PIN the same on every phone. A change not yet in the
+                    // cloud goes up as soon as the phone is online; otherwise the cloud is asked now
+                    // and then, so a PIN changed on another phone arrives here too.
+                    val prefs = com.jothivel.chits.utils.AppPreferences(applicationContext)
+                    if (prefs.getUserRole() == com.jothivel.chits.utils.AppPreferences.ROLE_ADMIN && (beats % PIN_CHECK_EVERY == 0 || prefs.isPinDirty())) {
+                        val pin = withContext(Dispatchers.IO) { AdminPinSync.sync(applicationContext) }
+                        if (pin == AdminPinSync.Result.Adopted) Toast.makeText(applicationContext, getString(R.string.host_pin_changed_elsewhere), Toast.LENGTH_LONG).show()
+                    }
+                    beats++
                     delay(SessionGuard.HEARTBEAT_MS)
                 }
             }

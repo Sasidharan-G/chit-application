@@ -38,6 +38,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jothivel.chits.R
+import com.jothivel.chits.data.firebase.AdminPinSync
 import com.jothivel.chits.data.firebase.CloudAccount
 import com.jothivel.chits.data.firebase.FirebaseSetup
 import com.jothivel.chits.ui.components.ConfirmBottomSheet
@@ -65,6 +66,7 @@ fun CloudAccountSection() {
     var showSheet by remember { mutableStateOf(false) }
     val email by produceState<String?>(null, refreshKey) { value = withContext(Dispatchers.IO) { CloudAccount.email(context) } }
     val connectedToast = stringResource(R.string.cloud_account_ok)
+    val pinAdoptedToast = stringResource(R.string.cloud_account_pin_adopted)
     val disconnectedToast = stringResource(R.string.cloud_account_disconnected)
 
     Surface(
@@ -106,7 +108,10 @@ fun CloudAccountSection() {
                     busy = false
                     when (result) {
                         is FirebaseSetup.AdminSignIn.Connected -> {
-                            Toast.makeText(context, connectedToast, Toast.LENGTH_SHORT).show()
+                            // Same PIN on every phone: send this phone's PIN up, or take the one already saved.
+                            val pin = withContext(Dispatchers.IO) { AdminPinSync.sync(context) }
+                            val message = if (pin == AdminPinSync.Result.Adopted) pinAdoptedToast else connectedToast
+                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                             showSheet = false
                         }
                         is FirebaseSetup.AdminSignIn.Failed -> {

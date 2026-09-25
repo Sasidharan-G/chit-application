@@ -56,6 +56,28 @@ service cloud.firestore {
       allow list, write: if false;
     }
 
+    // ---- adminPins: the admin's app PIN, shared between the admin's phones -----------------------
+    // Holds the SALTED HASH of the PIN (never the PIN) and when it was changed, so a new phone can take
+    // over the existing PIN and a change on one phone reaches the others. Only that admin can touch it.
+    match /adminPins/{uid} {
+      function ownsPin() {
+        return signedIn() && request.auth.uid == uid && isAdmin();
+      }
+
+      allow get: if ownsPin();
+      allow list: if false;
+
+      allow create, update: if ownsPin()
+        && request.resource.data.keys().hasOnly(['pinHash', 'changedAt'])
+        && request.resource.data.keys().hasAll(['pinHash', 'changedAt'])
+        && request.resource.data.pinHash is string
+        && request.resource.data.pinHash.size() >= 20
+        && request.resource.data.pinHash.size() <= 200
+        && request.resource.data.changedAt is number;
+
+      allow delete: if false;
+    }
+
     // ---- sessions: one live login per account -------------------------------------------------
     // `sessions/{uid}` names the phone that is logged in as that admin / agent and when it last checked in.
     // Only the account itself (an admin, or an active agent) may read, write or delete its own record; the

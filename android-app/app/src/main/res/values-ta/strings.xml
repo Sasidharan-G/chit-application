@@ -509,4 +509,18 @@
     <string name="force_pin_title">உங்கள் சொந்த PIN-ஐ அமைக்கவும்</string>
     <string name="force_pin_message">இந்த போன் இன்னும் இயல்புநிலை PIN-ஐ பயன்படுத்துகிறது. தொடர்வதற்கு முன் புதிய 4 இலக்க PIN-ஐ தேர்வு செய்யவும்.</string>
     <string name="force_pin_weak">1234, 0000 அல்லது திரும்பத் திரும்ப வரும்/தொடர் எண் அல்லாத PIN-ஐ தேர்வு செய்யவும்</string>
+    <string name="host_pin_changed_elsewhere">உங்கள் PIN வேறு போனில் மாற்றப்பட்டது. அடுத்த முறை புதிய PIN-ஐ பயன்படுத்தவும்.</string>
+    <string name="settings_change_pin_done_cloud">PIN மாற்றப்பட்டு cloud-இல் சேமிக்கப்பட்டது</string>
+    <string name="settings_change_pin_done_offline">இந்த போனில் PIN மாற்றப்பட்டது. போன் online ஆனதும் cloud-இல் சேமிக்கப்படும்.</string>
+    <string name="cloud_account_pin_adopted">Cloud கணக்கு இணைக்கப்பட்டது. இனி cloud-இல் சேமித்த PIN தான் உங்கள் PIN.</string>
+    <string name="force_pin_have_account">வேறு போனில் இந்த app-ஐ ஏற்கனவே பயன்படுத்துகிறேன்</string>
+    <string name="force_pin_back_to_new">புதிய PIN தேர்வு செய்</string>
+    <string name="force_pin_existing_title">உங்கள் தற்போதைய PIN-ஐ பயன்படுத்துங்கள்</string>
+    <string name="force_pin_existing_message">Cloud மின்னஞ்சல், கடவுச்சொல் மற்றும் மற்றொரு போனில் பயன்படுத்தும் PIN-ஐ உள்ளிடவும்.</string>
+    <string name="force_pin_existing_pin">தற்போதைய PIN</string>
+    <string name="force_pin_existing_button">தொடர்</string>
+    <string name="force_pin_existing_fill">மின்னஞ்சல், கடவுச்சொல், தற்போதைய PIN மூன்றையும் நிரப்பவும்</string>
+    <string name="force_pin_existing_wrong">தற்போதைய PIN தவறு</string>
+    <string name="force_pin_existing_none">Cloud-இல் இன்னும் PIN சேமிக்கப்படவில்லை. புதிய PIN தேர்வு செய்யவும்.</string>
+    <string name="force_pin_existing_offline">இணையம் இல்லை. இணைத்து மீண்டும் முயற்சிக்கவும்.</string>
 </resources>

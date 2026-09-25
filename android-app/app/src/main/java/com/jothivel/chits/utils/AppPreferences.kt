@@ -12,6 +12,8 @@ class AppPreferences(context: Context) {
     companion object {
         private const val PREF_NAME = "jothivel_chits_prefs"
         private const val KEY_LOGIN_PIN = "login_pin"
+        private const val KEY_PIN_CHANGED_AT = "pin_changed_at"
+        private const val KEY_PIN_DIRTY = "pin_dirty"
         private const val KEY_IS_ADMIN_SETUP = "is_admin_setup"
         private const val KEY_ADMIN_NAME = "admin_name"
         private const val KEY_ADMIN_PHONE = "admin_phone"
@@ -100,12 +102,34 @@ class AppPreferences(context: Context) {
 
     /** Changes the admin PIN after verifying [currentPin] - the only in-app way to ever move the
      *  PIN off its default (see [verifyPin]'s "blank stored PIN accepts 1234" fallback). Returns
-     *  false without changing anything if the current PIN is wrong or the new PIN isn't 4 digits. */
-    fun changePin(currentPin: String, newPin: String): Boolean {
+     *  false without changing anything if the current PIN is wrong or the new PIN isn't 4 digits.
+     *
+     *  With [share] the change is remembered as "not yet saved to the cloud" so it is sent there the
+     *  next time this phone is online (see AdminPinSync). The very first PIN chosen on a fresh phone
+     *  is not shared: a phone that joins an account adopts the PIN already saved in the cloud. */
+    fun changePin(currentPin: String, newPin: String, share: Boolean = true): Boolean {
         if (!verifyPin(currentPin)) return false
         if (newPin.length != 4 || !newPin.all(Char::isDigit)) return false
         savePin(newPin)
+        if (share) prefs.edit().putLong(KEY_PIN_CHANGED_AT, System.currentTimeMillis()).putBoolean(KEY_PIN_DIRTY, true).apply()
         return true
+    }
+
+    // ── Admin PIN shared through the cloud (AdminPinSync) ──────────────────
+    /** When the PIN was last changed on purpose, on any phone (0 = never / only the first local PIN). */
+    fun getPinChangedAt(): Long = prefs.getLong(KEY_PIN_CHANGED_AT, 0L)
+
+    /** True while a PIN change has not reached the cloud yet. */
+    fun isPinDirty(): Boolean = prefs.getBoolean(KEY_PIN_DIRTY, false)
+
+    /** The change up to [changedAt] is now in the cloud. */
+    fun markPinSynced(changedAt: Long) {
+        prefs.edit().putLong(KEY_PIN_CHANGED_AT, changedAt).putBoolean(KEY_PIN_DIRTY, false).apply()
+    }
+
+    /** Takes over the salted PIN hash saved in the cloud, so the same PIN opens this phone too. */
+    fun adoptPinHash(hash: String, changedAt: Long) {
+        prefs.edit().putString(KEY_LOGIN_PIN, hash).putLong(KEY_PIN_CHANGED_AT, changedAt).putBoolean(KEY_PIN_DIRTY, false).apply()
     }
 
     /** Returns a "too many attempts" message if the admin PIN entry is currently throttled, else

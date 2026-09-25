@@ -79,6 +79,45 @@ describe('nobody gets in without a real role', () => {
   });
 });
 
+describe('adminPins (the admin PIN shared between the admin\'s phones)', () => {
+  const HASH = 'v2$c2FsdHNhbHRzYWx0c2FsdA==$aGFzaGhhc2hoYXNoaGFzaGhhc2hoYXNoaGFzaA==';
+  const pin = over => ({ pinHash: HASH, changedAt: 1790000000000, ...over });
+
+  it('lets the admin save, read and update only their own PIN record', async () => {
+    await assertSucceeds(setDoc(doc(db(ADMIN), 'adminPins', ADMIN), pin()));
+    await assertSucceeds(getDoc(doc(db(ADMIN), 'adminPins', ADMIN)));
+    await assertSucceeds(updateDoc(doc(db(ADMIN), 'adminPins', ADMIN), { changedAt: 1790000005000 }));
+  });
+
+  it('never lets an agent, a stranger or a signed-out client touch it', async () => {
+    await env.withSecurityRulesDisabled(async ctx => { await setDoc(doc(ctx.firestore(), 'adminPins', ADMIN), pin()); });
+    for (const client of [db(AG1), db(STRANGER), anon()]) {
+      await assertFails(getDoc(doc(client, 'adminPins', ADMIN)));
+      await assertFails(setDoc(doc(client, 'adminPins', ADMIN), pin()));
+    }
+    await assertFails(setDoc(doc(db(AG1), 'adminPins', AG1), pin()));
+  });
+
+  it('never lets an admin read someone else\'s record, list the collection or delete', async () => {
+    await env.withSecurityRulesDisabled(async ctx => { await setDoc(doc(ctx.firestore(), 'adminPins', 'other-admin'), pin()); });
+    await assertFails(getDoc(doc(db(ADMIN), 'adminPins', 'other-admin')));
+    await assertFails(setDoc(doc(db(ADMIN), 'adminPins', 'other-admin'), pin()));
+    await assertFails(getDocs(collection(db(ADMIN), 'adminPins')));
+    await assertSucceeds(setDoc(doc(db(ADMIN), 'adminPins', ADMIN), pin()));
+    await assertFails(deleteDoc(doc(db(ADMIN), 'adminPins', ADMIN)));
+  });
+
+  it('only accepts a hash-shaped record: no plain PIN, no extra fields', async () => {
+    const ref = () => doc(db(ADMIN), 'adminPins', ADMIN);
+    await assertFails(setDoc(ref(), pin({ pinHash: '4826' })));
+    await assertFails(setDoc(ref(), pin({ pinHash: 'x'.repeat(201) })));
+    await assertFails(setDoc(ref(), pin({ pinHash: 1234567890123456789012 })));
+    await assertFails(setDoc(ref(), pin({ changedAt: 'yesterday' })));
+    await assertFails(setDoc(ref(), pin({ pin: '4826' })));
+    await assertFails(setDoc(ref(), { pinHash: HASH }));
+    await assertSucceeds(setDoc(ref(), pin()));
+  });
+});
 describe('sessions (one live login per account)', () => {
   const session = over => ({ deviceId: 'phone-A', deviceName: 'Redmi Note 9', lastSeen: serverTimestamp(), ...over });
 

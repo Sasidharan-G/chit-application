@@ -2881,6 +2881,8 @@ private fun ChangePinSection() {
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val changedToast = stringResource(R.string.settings_change_pin_done)
+    val changedCloudToast = stringResource(R.string.settings_change_pin_done_cloud)
+    val changedOfflineToast = stringResource(R.string.settings_change_pin_done_offline)
 
     fun close() {
         if (saving) return
@@ -2947,11 +2949,20 @@ private fun ChangePinSection() {
                             else -> {
                                 saving = true
                                 scope.launch {
-                                    // The PIN only opens this app on this phone (the cloud password is separate).
-                                    val changed = withContext(Dispatchers.IO) { com.jothivel.chits.utils.AppPreferences(context).changePin(currentPin, newPin) }
+                                    // Changed on this phone at once (works offline); saved to the cloud now if online,
+                                    // otherwise as soon as the phone is online again (AdminPinSync).
+                                    val outcome = withContext(Dispatchers.IO) {
+                                        if (!com.jothivel.chits.utils.AppPreferences(context).changePin(currentPin, newPin)) null
+                                        else com.jothivel.chits.data.firebase.AdminPinSync.sync(context)
+                                    }
                                     saving = false
-                                    if (changed) {
-                                        android.widget.Toast.makeText(context, changedToast, android.widget.Toast.LENGTH_SHORT).show()
+                                    if (outcome != null) {
+                                        val message = when (outcome) {
+                                            com.jothivel.chits.data.firebase.AdminPinSync.Result.NotConfigured -> changedToast
+                                            com.jothivel.chits.data.firebase.AdminPinSync.Result.Unreachable -> changedOfflineToast
+                                            else -> changedCloudToast
+                                        }
+                                        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
                                         close()
                                     } else error = context.getString(R.string.settings_change_pin_error_wrong)
                                 }
