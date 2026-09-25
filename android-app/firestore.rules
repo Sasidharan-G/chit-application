@@ -1,157 +1,165 @@
-// Deploy these rules from Firebase Console (Firestore Database -> Rules tab -> paste -> Publish),
-// or with `firebase deploy --only firestore:rules` once firebase.json is configured. Editing this
-// file in the repo does NOT change anything live until one of those deploy steps is run.
+// Deploy: Firebase Console -> Firestore Database -> Rules -> paste -> Publish
+// (or `firebase deploy --only firestore:rules` from android-app/). Editing this file does NOT change
+// anything live until one of those steps is done.
 //
-// ============================================================================================
-// RESIDUAL RISK - READ BEFORE RELYING ON THESE RULES (2026-09-14)
-// ============================================================================================
-// This app has NO real distinction between "admin device", "agent device" and "random
-// attacker" at the Firebase Auth layer:
-//   - Both the admin app and the agent (Labour) app sign in with the SAME anonymous Firebase
-//     Auth flow (FirebaseSetup.firestoreIfSignedIn). Anonymous sign-in is self-service - anyone
-//     who reverse engineers the APK (or just calls the Firestore REST API with an anonymous
-//     Firebase Auth token, which is trivial to obtain for this project) gets exactly the same
-//     `request.auth != null` identity as a legitimate agent or the admin.
-//   - Admin login is a LOCAL PIN check against AppPreferences and never touches Firebase at all,
-//     so there is no server-verified "admin" claim to test for in these rules.
-//   - Agent login (AgentAuthRepository.kt) authenticates by reading the agent's `pinHash` field
-//     from Firestore and comparing it CLIENT-SIDE. That read is a `whereEqualTo("phone", ...)`
-//     QUERY, which Firestore rules can only gate with collection-level `list`, not per-document
-//     `get`. So `agents/*` (pinHash included) cannot be locked down to "only the matching agent
-//     can read their own doc" without a server that verifies identity first.
-// The consequence: with anonymous auth as the only identity primitive, these rules CANNOT
-// enforce "only this agent can read/write their assigned data" or "only the admin can create
-// agents / modify pinHash". Every signed-in-anonymous caller - legitimate app or not - can
-// still read the full `agents` collection (including pinHash) and read/query chitGroups,
-// members, chitMemberships, installments and collections in full. What this file DOES add:
-//   1. `list` (collection scans) is left open only where the app's real query patterns require
-//      it (documented per collection below) - nothing is loosened further than before.
-//   2. Every write is now schema-validated (`keys().hasOnly(...)`/`hasAll(...)` + basic type
-//      checks) against the exact field shapes the app's own sync code produces, so a write that
-//      doesn't match the app's shape (extra fields, wrong types - e.g. injecting a `role` field,
-//      corrupting `isActive` to a string, etc.) is rejected. This raises the bar against casual
-//      tampering/fuzzing but does NOT stop a caller who mimics the legitimate shape - that
-//      requires server-verified identity, which this repo does not have.
-// A COMPLETE fix requires a Cloud Functions backend: a function that verifies the agent's PIN
-// server-side and mints a custom auth token carrying an `agentId`/`role` claim, with rules
-// rewritten to key off `request.auth.token.agentId` / `request.auth.token.role`. That is genuine
-// new infrastructure this repo does not currently have (no functions/ deploy target, no billing
-// plan requirement decision made) - it is not achievable by editing this file or client code
-// alone. Do not treat this file as sufficient once real customer financial/PII data depends on it.
-// ============================================================================================
+// IDENTITY MODEL (Spark plan - no Cloud Functions)
+//   * Everyone signs in with Firebase Auth email + password. Anonymous sign-in is NOT used any more.
+//   * ADMIN  : an Auth user whose UID has a document in `admins/{uid}` (created once, by hand, in the
+//              console - no client can write `admins`).
+//   * AGENT  : an Auth user whose UID has an ACTIVE document in `agents/{uid}`. Firebase itself checks
+//              the PIN (password) and rate-limits guesses; no PIN hash is stored anywhere in Firestore.
+//   * Data an agent may touch is stamped with `agentIds` (the UIDs of the active agents assigned to that
+//              chit); a rule only lets a UID that is in that list read it. Queries must carry the same
+//              `array-contains` filter, which is what lets Firestore prove the query is allowed.
+//   * Collections (payments taken by agents) are create-only for agents: an agent can only create a
+//              document for a chit assigned to them, in their own name, unsynced, with a server time. Nobody
+//              can edit or delete one afterwards; the admin can only flip `syncedToAdmin` (and refresh
+//              `agentIds` when assignments change).
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isSignedIn() {
+    function signedIn() {
       return request.auth != null;
     }
 
-    // ---- agents ----------------------------------------------------------------------------
-    // Read: AgentAuthRepository.login() queries `whereEqualTo("phone", phone)` (needs `list`,
-    // not just `get`) and the admin's Labour screen (listAgents()) reads the whole collection
-    // (also `list`). Both are core, unavoidable app flows, so `list` cannot be removed here
-    // without breaking login/admin management - this collection (pinHash included) is
-    // effectively readable by any signed-in-anonymous caller. See header comment: unfixable via
-    // rules alone without a Cloud Functions-verified identity.
-    match /agents/{agentId} {
-      allow read: if isSignedIn();
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
 
-      allow create: if isSignedIn()
-        && request.resource.data.keys().hasOnly(['name', 'phone', 'pinHash', 'isActive', 'assignedGroups', 'createdAt', 'createdBy'])
-        && request.resource.data.keys().hasAll(['name', 'phone', 'pinHash', 'isActive', 'assignedGroups'])
+    function isActiveAgent() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/agents/$(request.auth.uid))
+        && get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.isActive == true;
+    }
+
+    // An active agent whose UID is stamped on this document.
+    function agentMayRead(data) {
+      return isActiveAgent() && ('agentIds' in data) && request.auth.uid in data.agentIds;
+    }
+
+    function optionalString(data, key) {
+      return !(key in data) || data[key] == null || data[key] is string;
+    }
+
+    function optionalNumber(data, key) {
+      return !(key in data) || data[key] == null || data[key] is number;
+    }
+
+    function optionalBool(data, key) {
+      return !(key in data) || data[key] == null || data[key] is bool;
+    }
+
+    // ---- admins: readable only by that admin (so the app can confirm it is one). No client writes.
+    match /admins/{adminId} {
+      allow get: if signedIn() && request.auth.uid == adminId;
+      allow list, write: if false;
+    }
+
+    // ---- agents -----------------------------------------------------------------------------
+    // Admin manages them; an agent reads only their own document (no PIN hash is stored here).
+    match /agents/{agentId} {
+      allow get: if isAdmin() || (signedIn() && request.auth.uid == agentId);
+      allow list: if isAdmin();
+
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name', 'phone', 'isActive', 'assignedGroups', 'authEmail', 'gen', 'createdAt', 'createdBy'])
+        && request.resource.data.keys().hasAll(['name', 'phone', 'isActive', 'assignedGroups'])
         && request.resource.data.name is string
         && request.resource.data.phone is string
-        && request.resource.data.pinHash is string
         && request.resource.data.isActive is bool
         && request.resource.data.assignedGroups is list;
 
-      allow update: if isSignedIn()
-        && request.resource.data.keys().hasOnly(['name', 'phone', 'pinHash', 'isActive', 'assignedGroups', 'createdAt', 'createdBy'])
-        && (!('name' in request.resource.data) || request.resource.data.name is string)
-        && (!('phone' in request.resource.data) || request.resource.data.phone is string)
-        && (!('pinHash' in request.resource.data) || request.resource.data.pinHash is string)
-        && (!('isActive' in request.resource.data) || request.resource.data.isActive is bool)
-        && (!('assignedGroups' in request.resource.data) || request.resource.data.assignedGroups is list);
-
-      allow delete: if isSignedIn();
+      allow delete: if isAdmin();
     }
 
-    // ---- chitGroups -------------------------------------------------------------------------
-    // Written wholesale (batch .set(), full document each time) by the admin's
-    // FirestoreDataSync.syncAllToCloud() -> groupMap(). Read by full collection get() (admin
-    // restore) and by per-id get() (AgentDataSync for each assigned group) - `list` required.
+    // ---- reference data pushed by the admin: readable by admin, or by an agent stamped on it ------
     match /chitGroups/{groupId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn()
-        && request.resource.data.keys().hasOnly(['name', 'registerNo', 'chitValue', 'durationMonths', 'subscriberCount', 'branch', 'startDate', 'status'])
-        && (!('chitValue' in request.resource.data) || request.resource.data.chitValue == null || request.resource.data.chitValue is number)
-        && (!('durationMonths' in request.resource.data) || request.resource.data.durationMonths == null || request.resource.data.durationMonths is number)
-        && (!('subscriberCount' in request.resource.data) || request.resource.data.subscriberCount == null || request.resource.data.subscriberCount is number)
-        && (!('status' in request.resource.data) || request.resource.data.status == null || request.resource.data.status is string);
+      allow get, list: if isAdmin() || agentMayRead(resource.data);
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name', 'registerNo', 'chitValue', 'durationMonths', 'subscriberCount', 'branch', 'startDate', 'status', 'agentIds'])
+        && request.resource.data.agentIds is list
+        && optionalNumber(request.resource.data, 'chitValue')
+        && optionalNumber(request.resource.data, 'durationMonths')
+        && optionalNumber(request.resource.data, 'subscriberCount')
+        && optionalString(request.resource.data, 'status');
     }
 
-    // ---- members ------------------------------------------------------------------------
-    // Written wholesale by FirestoreDataSync -> memberMap(). Read by full collection get()
-    // (admin restore) and per-id get() (AgentDataSync) - `list` required for the admin path.
     match /members/{memberId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn()
+      allow get, list: if isAdmin() || agentMayRead(resource.data);
+      allow write: if isAdmin()
         && request.resource.data.keys().hasOnly([
              'name', 'phone', 'photoUrl', 'nomineeName', 'nomineePhone', 'role', 'isActive',
-             'dob', 'gender', 'addressLine', 'city', 'state', 'pincode', 'aadhaarNoEncrypted',
-             'panNo', 'aadhaarDocumentPath', 'panDocumentPath', 'selectedChitId', 'ticketNo',
-             'installmentAmount', 'joiningDate', 'dueDate', 'nomineeRelationship'
+             'dob', 'gender', 'addressLine', 'city', 'state', 'pincode', 'panNo',
+             'selectedChitId', 'ticketNo', 'installmentAmount', 'joiningDate', 'dueDate',
+             'nomineeRelationship', 'agentIds'
            ])
-        && (!('isActive' in request.resource.data) || request.resource.data.isActive == null || request.resource.data.isActive is bool);
+        && request.resource.data.agentIds is list
+        && optionalBool(request.resource.data, 'isActive');
     }
 
-    // ---- chitMemberships ----------------------------------------------------------------
-    // Written wholesale by FirestoreDataSync -> membershipMap(). Read via
-    // `whereEqualTo("groupId", groupId)` from both admin restore and AgentDataSync - `list`
-    // required; rules cannot restrict this to "caller's assigned groups only" without
-    // server-verified agent identity (see header comment).
     match /chitMemberships/{membershipId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn()
-        && request.resource.data.keys().hasOnly(['memberId', 'groupId', 'ticketNo', 'installmentAmountPaise', 'joiningDate', 'dueDate', 'isActive'])
-        && (!('memberId' in request.resource.data) || request.resource.data.memberId == null || request.resource.data.memberId is string)
-        && (!('groupId' in request.resource.data) || request.resource.data.groupId == null || request.resource.data.groupId is string)
-        && (!('installmentAmountPaise' in request.resource.data) || request.resource.data.installmentAmountPaise == null || request.resource.data.installmentAmountPaise is number)
-        && (!('isActive' in request.resource.data) || request.resource.data.isActive == null || request.resource.data.isActive is bool);
+      allow get, list: if isAdmin() || agentMayRead(resource.data);
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['memberId', 'groupId', 'ticketNo', 'installmentAmountPaise', 'joiningDate', 'dueDate', 'isActive', 'agentIds'])
+        && request.resource.data.agentIds is list
+        && optionalString(request.resource.data, 'memberId')
+        && optionalString(request.resource.data, 'groupId')
+        && optionalNumber(request.resource.data, 'installmentAmountPaise')
+        && optionalBool(request.resource.data, 'isActive');
     }
 
-    // ---- installments ---------------------------------------------------------------------
-    // Written wholesale by FirestoreDataSync -> installmentMap(). Read via
-    // `whereEqualTo("groupId", groupId)` from AgentDataSync - `list` required, same limitation
-    // as chitMemberships above.
     match /installments/{installmentId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn()
-        && request.resource.data.keys().hasOnly(['groupId', 'installmentNo', 'baseAmount', 'kasaruAmount', 'payoutAmount', 'auctionDate', 'status', 'winningMemberId'])
-        && (!('groupId' in request.resource.data) || request.resource.data.groupId == null || request.resource.data.groupId is string)
-        && (!('installmentNo' in request.resource.data) || request.resource.data.installmentNo == null || request.resource.data.installmentNo is number)
-        && (!('baseAmount' in request.resource.data) || request.resource.data.baseAmount == null || request.resource.data.baseAmount is number);
+      allow get, list: if isAdmin() || agentMayRead(resource.data);
+      allow write: if isAdmin()
+        && request.resource.data.keys().hasOnly(['groupId', 'installmentNo', 'baseAmount', 'kasaruAmount', 'payoutAmount', 'auctionDate', 'status', 'winningMemberId', 'agentIds'])
+        && request.resource.data.agentIds is list
+        && optionalString(request.resource.data, 'groupId')
+        && optionalNumber(request.resource.data, 'installmentNo')
+        && optionalNumber(request.resource.data, 'baseAmount');
     }
 
-    // ---- collections (payments) ------------------------------------------------------------
-    // Written by AgentCollectionSync.push()/flushPending() (agent side) with a fixed doc-id
-    // (requestId), one doc at a time. Read by full collection get() (admin restore) and by the
-    // admin's FirebaseSyncService listener (`syncedToAdmin == false`) - `list` required.
+    // ---- collections (payments) -------------------------------------------------------------
     match /collections/{collectionId} {
-      allow read: if isSignedIn();
-      allow write: if isSignedIn()
-        && request.resource.data.keys().hasOnly([
-             'agentId', 'agentName', 'memberId', 'memberName', 'groupId', 'chitNo', 'amountPaise',
-             'mode', 'referenceNo', 'receiptNo', 'notes', 'businessDate', 'timestamp', 'status',
-             'syncedToAdmin', 'requestId'
-           ])
-        && request.resource.data.keys().hasAll(['memberId', 'groupId', 'amountPaise', 'mode', 'receiptNo', 'businessDate', 'status', 'syncedToAdmin', 'requestId'])
-        && request.resource.data.memberId is string
-        && request.resource.data.groupId is string
-        && request.resource.data.amountPaise is number
-        && request.resource.data.mode is string
-        && request.resource.data.syncedToAdmin is bool;
+      function shape(d) {
+        return d.keys().hasOnly([
+                 'agentId', 'agentName', 'memberId', 'memberName', 'groupId', 'chitNo', 'amountPaise',
+                 'mode', 'referenceNo', 'receiptNo', 'notes', 'businessDate', 'timestamp', 'status',
+                 'syncedToAdmin', 'requestId', 'agentIds'
+               ])
+            && d.keys().hasAll(['memberId', 'groupId', 'amountPaise', 'mode', 'receiptNo', 'businessDate', 'status', 'syncedToAdmin', 'requestId', 'agentIds'])
+            && d.memberId is string
+            && d.groupId is string
+            && d.amountPaise is int
+            && d.amountPaise > 0
+            && d.mode is string
+            && d.syncedToAdmin is bool
+            && d.agentIds is list
+            && d.requestId == collectionId
+            && (!('timestamp' in d) || d.timestamp == request.time);
+      }
+
+      allow get, list: if isAdmin() || agentMayRead(resource.data);
+
+      // The admin may record its own collections (already applied locally, so syncedToAdmin = true).
+      allow create: if (isAdmin() && shape(request.resource.data))
+        // An agent may only create a payment for a chit assigned to them, under their own UID.
+        || (isActiveAgent()
+            && shape(request.resource.data)
+            && request.resource.data.agentId == request.auth.uid
+            && request.resource.data.syncedToAdmin == false
+            && request.resource.data.amountPaise <= 100000000
+            && request.auth.uid in get(/databases/$(database)/documents/chitGroups/$(request.resource.data.groupId)).data.agentIds
+            && request.resource.data.agentIds == get(/databases/$(database)/documents/chitGroups/$(request.resource.data.groupId)).data.agentIds);
+
+      // Immutable afterwards. The only change anyone may make is the admin marking it applied, or
+      // refreshing which agents can see it after assignments change.
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['syncedToAdmin', 'agentIds'])
+        && request.resource.data.syncedToAdmin is bool
+        && request.resource.data.agentIds is list;
+
+      allow delete: if false;
     }
   }
 }

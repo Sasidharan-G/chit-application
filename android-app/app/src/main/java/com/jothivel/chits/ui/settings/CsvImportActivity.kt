@@ -27,6 +27,7 @@ import androidx.lifecycle.lifecycleScope
 import com.jothivel.chits.data.local.AppDatabase
 import com.jothivel.chits.data.local.entity.ChitGroupEntity
 import com.jothivel.chits.data.local.entity.ChitMembershipEntity
+import com.jothivel.chits.data.local.entity.CollectionReceiptEntity
 import com.jothivel.chits.data.local.entity.InstallmentEntity
 import com.jothivel.chits.data.local.entity.MemberEntity
 import com.jothivel.chits.data.local.entity.PaymentEntity
@@ -70,7 +71,10 @@ data class ImportPaymentRow(
     val amountPaidPaise: Long,
     val paymentStatus: String, // PAID | PARTIAL | DUE | OVERDUE
     val paymentMode: String,   // CASH | UPI | BANK_TRANSFER
-    val dueDateRaw: String
+    val dueDateRaw: String,
+    // Optional 11th column. When the sheet says when the money was actually received it is used
+    // as the payment date; otherwise the Due Date is the best available stand-in.
+    val paidDateRaw: String = ""
 )
 
 /** Counters returned after writing to the DB. */
@@ -107,10 +111,9 @@ class CsvImportActivity : BaseActivity() {
     }
 
     /**
-     * Smart upsert:
-     * - Members matched by phone → existing ID reused (REPLACE = update, no duplicate)
-     * - Groups matched by name   → existing ID reused
-     * - KYC/address fields of existing members are preserved
+     * Smart upsert, applied as ONE transaction - a failure halfway (bad row, ambiguous chit name,
+     * disk full) rolls the whole import back instead of leaving a half-imported database.
+     * See [applyImport] for the matching rules.
      */
     private suspend fun importData(
         members: List<MemberEntity>,
@@ -120,169 +123,26 @@ class CsvImportActivity : BaseActivity() {
         withContext(Dispatchers.IO) {
             try {
                 val db = AppDatabase.getDatabase(applicationContext)
-                var newMembers = 0; var updatedMembers = 0
-                var newGroups = 0; var updatedGroups = 0
-                var newInstallments = 0; var newMemberships = 0; var newPayments = 0
-
-                // ── Groups ────────────────────────────────────────────────────
-                val resolvedGroups = groups.map { g ->
-                    val existing = g.name?.let { db.groupDao().getGroupByNameSync(it) }
-                    if (existing != null) { g.id = existing.id; updatedGroups++ } else { newGroups++ }
-                    g
-                }
-                if (resolvedGroups.isNotEmpty()) db.groupDao().insertAll(resolvedGroups)
-                val groupByName = resolvedGroups.associateBy { it.name }
-
-                // ── Members ───────────────────────────────────────────────────
-                val resolvedMembers = members.map { m ->
-                    val existing = m.phone?.let { db.memberDao().getMemberByPhoneSync(it) }
-                    if (existing != null) {
-                        m.id = existing.id
-                        // Preserve every field the spreadsheet can't supply, so re-importing
-                        // (e.g. to update payment status) never blanks out data entered by hand.
-                        m.photoUrl = existing.photoUrl
-                        m.aadhaarNoEncrypted = existing.aadhaarNoEncrypted
-                        m.panNo = existing.panNo
-                        m.aadhaarDocumentPath = existing.aadhaarDocumentPath
-                        m.panDocumentPath = existing.panDocumentPath
-                        m.addressLine = existing.addressLine
-                        m.city = existing.city
-                        m.state = existing.state
-                        m.pincode = existing.pincode
-                        m.dob = existing.dob
-                        m.gender = existing.gender
-                        m.nomineeName = existing.nomineeName
-                        m.nomineePhone = existing.nomineePhone
-                        m.nomineeRelationship = existing.nomineeRelationship
-                        // Baseline from the existing row; the group-linkage block below only
-                        // overrides selectedChitId/installmentAmount/joiningDate/dueDate when
-                        // the sheet actually resolves a group — ticketNo the sheet never supplies.
-                        m.ticketNo = existing.ticketNo
-                        m.selectedChitId = existing.selectedChitId
-                        m.installmentAmount = existing.installmentAmount
-                        m.joiningDate = existing.joiningDate
-                        m.dueDate = existing.dueDate
-                        updatedMembers++
-                    } else { newMembers++ }
-
-                    // Mirror what AddMemberActivity sets when a member is linked to a chit,
-                    // so imported members show up wherever the app queries by selectedChitId
-                    // (Ledger, Groups, Collection-entry) and not just via ChitMembershipEntity
-                    // (Pending). Without this, imported rows were only ever visible on Pending.
-                    val firstRow = paymentRows.firstOrNull { it.memberPhone == m.phone }
-                    val groupForMember = firstRow?.let { groupByName[it.groupName] }
-                    if (groupForMember != null) {
-                        m.selectedChitId = groupForMember.id
-                        m.installmentAmount = (firstRow.baseAmountPaise / 100).toString()
-                        m.joiningDate = groupForMember.startDate
-                        m.dueDate = firstRow.dueDateRaw.ifBlank { null }
-                    }
-                    m
-                }
-                if (resolvedMembers.isNotEmpty()) db.memberDao().insertAll(resolvedMembers)
-
-                // ── Installments / Memberships / Payments ────────────────────────
-                // Every row that carried a group name also produced an ImportPaymentRow
-                // (see rowToMemberAndGroup), so these lookups are guaranteed to resolve.
-                val memberByPhone = resolvedMembers.associateBy { it.phone }
-                val installmentCache = mutableMapOf<String, MutableMap<Int, InstallmentEntity>>()
-                val receiptStamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
-
-                for (row in paymentRows) {
-                    val group = groupByName[row.groupName] ?: continue
-                    val member = memberByPhone[row.memberPhone] ?: continue
-
-                    // Find-or-create the installment for (groupId, installmentNo)
-                    val groupInstallments = installmentCache.getOrPut(group.id) {
-                        db.installmentDao().getInstallmentsForGroupSync(group.id)
-                            .associateBy { it.installmentNo }.toMutableMap()
-                    }
-                    val installment = groupInstallments[row.installmentNo]?.apply {
-                        // Don't clobber an already-configured fixed-schedule installment (its
-                        // baseAmount is stored as gross = net + kasaru, see
-                        // CompactNewChitScreen.save()) with the CSV's raw figure while leaving
-                        // its kasaruAmount untouched - that mismatch would corrupt the due
-                        // calculation. Only backfill when this installment has no kasaru
-                        // component yet (kasaruAmount == 0), i.e. it wasn't set up that way.
-                        if ((kasaruAmount ?: 0) == 0) baseAmount = row.baseAmountPaise.toInt()
-                    } ?: InstallmentEntity().apply {
-                        id = UUID.randomUUID().toString()
-                        groupId = group.id
-                        installmentNo = row.installmentNo
-                        baseAmount = row.baseAmountPaise.toInt()
-                        kasaruAmount = 0
-                        payoutAmount = null
-                        auctionDate = null
-                        status = "UPCOMING"
-                        winningMemberId = null
-                    }.also { newInstallments++ }
-                    db.installmentDao().insert(installment)
-                    groupInstallments[row.installmentNo] = installment
-
-                    // Find-or-create + activate the member's subscription to this group,
-                    // since CollectionService/FinancialService gate dues/payments on isActive.
-                    val membership = db.membershipDao().getSync(member.id, group.id)?.apply { isActive = true }
-                        ?: ChitMembershipEntity().apply {
-                            id = UUID.randomUUID().toString()
-                            memberId = member.id
-                            groupId = group.id
-                            ticketNo = null
-                            installmentAmountPaise = 0L // per-installment baseAmount governs (see CollectionService)
-                            joiningDate = group.startDate
-                            dueDate = row.dueDateRaw.ifBlank { null }
-                            isActive = true
-                        }.also { newMemberships++ }
-                    db.membershipDao().upsertAll(listOf(membership))
-
-                    // Only PAID/PARTIAL create a PaymentEntity — DUE/OVERDUE is represented
-                    // by the *absence* of a payment row, matching CollectionService's convention
-                    // (pending = scheduled baseAmount - sum of PaymentEntity rows for that installment).
-                    if (row.paymentStatus == "PAID" || row.paymentStatus == "PARTIAL") {
-                        val alreadyPaid = db.paymentDao()
-                            .getPaymentsForInstallmentSync(member.id, group.id, row.installmentNo.toString())
-                            .sumOf { it.amountPaid }
-                        val delta = row.amountPaidPaise - alreadyPaid
-                        if (delta > 0) {
-                            db.paymentDao().insertPayment(PaymentEntity().apply {
-                                id = UUID.randomUUID().toString()
-                                memberId = member.id
-                                groupId = group.id
-                                installmentId = row.installmentNo.toString()
-                                amountPaid = delta
-                                mode = row.paymentMode
-                                referenceNo = null
-                                receiptNo = "IMP-${receiptStamp.format(java.util.Date())}-${UUID.randomUUID().toString().take(4).uppercase()}"
-                                paidAt = parseImportDate(row.dueDateRaw) ?: System.currentTimeMillis()
-                                status = row.paymentStatus
-                                collectedBy = null
-                                collectedByAgentId = null
-                            })
-                            newPayments++
-                        }
-                    }
-                }
-
-                val summary = ImportSummary(
-                    newMembers, updatedMembers, newGroups, updatedGroups,
-                    newInstallments, newMemberships, newPayments
-                )
+                var summary: ImportSummary? = null
+                db.runInTransaction { summary = applyImport(db, members, groups, paymentRows) }
+                val done = checkNotNull(summary)
                 withContext(Dispatchers.Main) {
                     val msg = buildString {
                         append("✓ Import complete!\n")
-                        if (summary.newMembers > 0)      append("${summary.newMembers} new member(s) added\n")
-                        if (summary.updatedMembers > 0)  append("${summary.updatedMembers} member(s) updated\n")
-                        if (summary.newGroups > 0)       append("${summary.newGroups} new chit group(s) added\n")
-                        if (summary.updatedGroups > 0)   append("${summary.updatedGroups} chit group(s) updated\n")
-                        if (summary.newInstallments > 0) append("${summary.newInstallments} installment(s) created\n")
-                        if (summary.newMemberships > 0)  append("${summary.newMemberships} membership(s) linked\n")
-                        if (summary.newPayments > 0)     append("${summary.newPayments} payment(s) recorded")
+                        if (done.newMembers > 0)      append("${done.newMembers} new member(s) added\n")
+                        if (done.updatedMembers > 0)  append("${done.updatedMembers} member(s) updated\n")
+                        if (done.newGroups > 0)       append("${done.newGroups} new chit group(s) added\n")
+                        if (done.updatedGroups > 0)   append("${done.updatedGroups} existing chit group(s) matched\n")
+                        if (done.newInstallments > 0) append("${done.newInstallments} installment(s) created\n")
+                        if (done.newMemberships > 0)  append("${done.newMemberships} membership(s) linked\n")
+                        if (done.newPayments > 0)     append("${done.newPayments} payment(s) recorded")
                     }
                     Toast.makeText(this@CsvImportActivity, msg.trim(), Toast.LENGTH_LONG).show()
                     SmoothTransitions.finishSmooth(this@CsvImportActivity)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@CsvImportActivity, "Import failed: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@CsvImportActivity, "Import failed - nothing was changed: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -292,6 +152,206 @@ class CsvImportActivity : BaseActivity() {
         super.finish()
         SmoothTransitions.applyExitTransition(this)
     }
+}
+
+// ─── Import writer ────────────────────────────────────────────────────────────
+
+/**
+ * Writes a parsed sheet into [db]. Must be called inside a transaction (see importData).
+ *
+ * - A chit named in the sheet is matched to an EXISTING chit by its chit number first, then by
+ *   its name. Two existing chits sharing that name make the match ambiguous, so the import stops
+ *   rather than guess and put payments on the wrong chit. Existing chits are never overwritten
+ *   (they used to be replaced by the sheet's placeholder chit number, start date and value).
+ * - Members are matched by phone; anything the sheet cannot supply is preserved.
+ * - Every imported payment also gets a receipt row, so receipts, the daily summary and history
+ *   see imported money the same way as collected money.
+ */
+internal fun applyImport(
+    db: AppDatabase,
+    members: List<MemberEntity>,
+    groups: List<ChitGroupEntity>,
+    paymentRows: List<ImportPaymentRow>
+): ImportSummary {
+    var newMembers = 0; var updatedMembers = 0
+    var newGroups = 0; var updatedGroups = 0
+    var newInstallments = 0; var newMemberships = 0; var newPayments = 0
+
+    // ── Groups ────────────────────────────────────────────────────
+    val groupByName = mutableMapOf<String?, ChitGroupEntity>()
+    val groupsToInsert = mutableListOf<ChitGroupEntity>()
+    groups.forEach { g ->
+        val name = g.name.orEmpty()
+        val byNumber = if (name.isBlank()) null else db.groupDao().getGroupByRegisterNoSync(name)
+        val existing = byNumber ?: run {
+            val sameName = db.groupDao().getGroupsByNameSync(name)
+            check(sameName.size <= 1) {
+                "More than one chit is named '$name'. Rename them, or put the chit number in the sheet's Chit Group column."
+            }
+            sameName.firstOrNull()
+        }
+        if (existing != null) {
+            groupByName[g.name] = existing
+            updatedGroups++
+        } else {
+            groupByName[g.name] = g
+            groupsToInsert += g
+            newGroups++
+        }
+    }
+    if (groupsToInsert.isNotEmpty()) db.groupDao().insertAll(groupsToInsert)
+
+    // ── Members ───────────────────────────────────────────────────
+    val resolvedMembers = members.map { m ->
+        val existing = m.phone?.let { db.memberDao().getMemberByPhoneSync(it) }
+        if (existing != null) {
+            m.id = existing.id
+            // Preserve every field the spreadsheet can't supply, so re-importing
+            // (e.g. to update payment status) never blanks out data entered by hand.
+            m.photoUrl = existing.photoUrl
+            m.aadhaarNoEncrypted = existing.aadhaarNoEncrypted
+            m.panNo = existing.panNo
+            m.aadhaarDocumentPath = existing.aadhaarDocumentPath
+            m.panDocumentPath = existing.panDocumentPath
+            m.addressLine = existing.addressLine
+            m.city = existing.city
+            m.state = existing.state
+            m.pincode = existing.pincode
+            m.dob = existing.dob
+            m.gender = existing.gender
+            m.nomineeName = existing.nomineeName
+            m.nomineePhone = existing.nomineePhone
+            m.nomineeRelationship = existing.nomineeRelationship
+            // Baseline from the existing row; the group-linkage block below only
+            // overrides selectedChitId/installmentAmount/joiningDate/dueDate when
+            // the sheet actually resolves a group — ticketNo the sheet never supplies.
+            m.ticketNo = existing.ticketNo
+            m.selectedChitId = existing.selectedChitId
+            m.installmentAmount = existing.installmentAmount
+            m.joiningDate = existing.joiningDate
+            m.dueDate = existing.dueDate
+            updatedMembers++
+        } else { newMembers++ }
+
+        // Mirror what the Add Member screen sets when a member is linked to a chit,
+        // so imported members show up wherever the app queries by selectedChitId
+        // (Ledger, Groups, Collection-entry) and not just via ChitMembershipEntity
+        // (Pending). Without this, imported rows were only ever visible on Pending.
+        val firstRow = paymentRows.firstOrNull { it.memberPhone == m.phone }
+        val groupForMember = firstRow?.let { groupByName[it.groupName] }
+        if (groupForMember != null) {
+            m.selectedChitId = groupForMember.id
+            m.installmentAmount = (firstRow.baseAmountPaise / 100).toString()
+            m.joiningDate = groupForMember.startDate
+            m.dueDate = firstRow.dueDateRaw.ifBlank { null }
+        }
+        m
+    }
+    if (resolvedMembers.isNotEmpty()) db.memberDao().insertAll(resolvedMembers)
+
+    // ── Installments / Memberships / Payments ────────────────────────
+    // Every row that carried a group name also produced an ImportPaymentRow
+    // (see rowToMemberAndGroup), so these lookups are guaranteed to resolve.
+    val memberByPhone = resolvedMembers.associateBy { it.phone }
+    val installmentCache = mutableMapOf<String, MutableMap<Int, InstallmentEntity>>()
+    val receiptStamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+    val businessDayFormat = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+
+    for (row in paymentRows) {
+        val group = groupByName[row.groupName] ?: continue
+        val member = memberByPhone[row.memberPhone] ?: continue
+
+        // Find-or-create the installment for (groupId, installmentNo)
+        val groupInstallments = installmentCache.getOrPut(group.id) {
+            db.installmentDao().getInstallmentsForGroupSync(group.id)
+                .associateBy { it.installmentNo }.toMutableMap()
+        }
+        val installment = groupInstallments[row.installmentNo]?.apply {
+            // Don't clobber an already-configured fixed-schedule installment (its
+            // baseAmount is stored as gross = net + kasaru, see
+            // ChitAdminService.buildInstallments) with the CSV's raw figure while leaving
+            // its kasaruAmount untouched - that mismatch would corrupt the due
+            // calculation. Only backfill when this installment has no kasaru
+            // component yet (kasaruAmount == 0), i.e. it wasn't set up that way.
+            if ((kasaruAmount ?: 0) == 0) baseAmount = row.baseAmountPaise.toInt()
+        } ?: InstallmentEntity().apply {
+            id = UUID.randomUUID().toString()
+            groupId = group.id
+            installmentNo = row.installmentNo
+            baseAmount = row.baseAmountPaise.toInt()
+            kasaruAmount = 0
+            payoutAmount = null
+            auctionDate = null
+            status = "UPCOMING"
+            winningMemberId = null
+        }.also { newInstallments++ }
+        db.installmentDao().insert(installment)
+        groupInstallments[row.installmentNo] = installment
+
+        // Find-or-create + activate the member's subscription to this group,
+        // since CollectionService/FinancialService gate dues/payments on isActive.
+        val membership = db.membershipDao().getSync(member.id, group.id)?.apply { isActive = true }
+            ?: ChitMembershipEntity().apply {
+                id = UUID.randomUUID().toString()
+                memberId = member.id
+                groupId = group.id
+                ticketNo = null
+                installmentAmountPaise = 0L // per-installment baseAmount governs (see CollectionService)
+                joiningDate = group.startDate
+                dueDate = row.dueDateRaw.ifBlank { null }
+                isActive = true
+            }.also { newMemberships++ }
+        db.membershipDao().upsertAll(listOf(membership))
+
+        // Only PAID/PARTIAL create a PaymentEntity — DUE/OVERDUE is represented
+        // by the *absence* of a payment row, matching CollectionService's convention
+        // (pending = scheduled baseAmount - sum of PaymentEntity rows for that installment).
+        if (row.paymentStatus == "PAID" || row.paymentStatus == "PARTIAL") {
+            val alreadyPaid = db.paymentDao()
+                .getPaymentsForInstallmentSync(member.id, group.id, row.installmentNo.toString())
+                .sumOf { it.amountPaid }
+            val delta = row.amountPaidPaise - alreadyPaid
+            if (delta > 0) {
+                val paidAt = parseImportDate(row.paidDateRaw) ?: parseImportDate(row.dueDateRaw) ?: System.currentTimeMillis()
+                val paymentId = UUID.randomUUID().toString()
+                val receiptNo = "IMP-${receiptStamp.format(java.util.Date())}-${UUID.randomUUID().toString().take(4).uppercase()}"
+                db.paymentDao().insertPayment(PaymentEntity().apply {
+                    id = paymentId
+                    memberId = member.id
+                    groupId = group.id
+                    installmentId = row.installmentNo.toString()
+                    amountPaid = delta
+                    mode = row.paymentMode
+                    referenceNo = null
+                    this.receiptNo = receiptNo
+                    this.paidAt = paidAt
+                    status = row.paymentStatus
+                    collectedBy = null
+                    collectedByAgentId = null
+                })
+                db.collectionReceiptDao().insert(CollectionReceiptEntity().apply {
+                    id = UUID.randomUUID().toString()
+                    requestId = "IMPORT-$paymentId"
+                    this.receiptNo = receiptNo
+                    memberId = member.id
+                    groupId = group.id
+                    amountPaidPaise = delta
+                    mode = when (row.paymentMode) { "UPI" -> "UPI"; "BANK_TRANSFER" -> "Bank"; else -> "Cash" }
+                    referenceNo = null
+                    notes = "Imported from spreadsheet"
+                    businessDate = businessDayFormat.format(java.util.Date(paidAt))
+                    this.paidAt = paidAt
+                    status = "SAVED"
+                })
+                newPayments++
+            }
+        }
+    }
+
+    return ImportSummary(
+        newMembers, updatedMembers, newGroups, updatedGroups,
+        newInstallments, newMemberships, newPayments
+    )
 }
 
 // ─── Composable Screen ────────────────────────────────────────────────────────
@@ -578,7 +638,8 @@ fun SummaryRow(
  * [ImportPaymentRow] carrying the installment/payment columns for later DB resolution.
  * Column order (0-indexed):
  * 0 Member Name | 1 Phone | 2 Chit Group | 3 Installment No | 4 Base Amount |
- * 5 Amount Due  | 6 Amount Paid | 7 Payment Status | 8 Payment Mode | 9 Due Date
+ * 5 Amount Due  | 6 Amount Paid | 7 Payment Status | 8 Payment Mode | 9 Due Date |
+ * 10 Payment Date (optional - falls back to the Due Date)
  *
  * @return 1 if the row was skipped, 0 if processed.
  */
@@ -598,7 +659,8 @@ internal fun rowToMemberAndGroup(
     paymentRows: MutableList<ImportPaymentRow>,
     seenPhones: MutableSet<String>,
     errors: MutableList<String>,
-    lineLabel: String
+    lineLabel: String,
+    paidDateStr: String = ""
 ): Int {
     if (memberName.isBlank() || phone.isBlank()) {
         errors.add("$lineLabel: missing name or phone, skipped")
@@ -669,7 +731,8 @@ internal fun rowToMemberAndGroup(
                     amountPaidPaise = amountPaidPaise,
                     paymentStatus = status,
                     paymentMode = mode,
-                    dueDateRaw = dueDateStr.trim()
+                    dueDateRaw = dueDateStr.trim(),
+                    paidDateRaw = paidDateStr.trim()
                 )
             )
         }
@@ -725,7 +788,8 @@ private fun parseCsvFile(context: android.content.Context, uri: Uri): CsvImportR
                     paymentStatusStr = cols.getOrElse(7) { "" },
                     paymentModeStr   = cols.getOrElse(8) { "" },
                     dueDateStr       = cols.getOrElse(9) { "" },
-                    members, groupMap, paymentRows, seenPhones, errors, "Row $lineIndex"
+                    members, groupMap, paymentRows, seenPhones, errors, "Row $lineIndex",
+                    paidDateStr      = cols.getOrElse(10) { "" }
                 )
             }
         }
@@ -808,7 +872,8 @@ private fun parseXlsxFile(context: android.content.Context, uri: Uri): CsvImport
                 paymentStatusStr = cols.getOrElse(7) { "" },
                 paymentModeStr   = cols.getOrElse(8) { "" },
                 dueDateStr       = cols.getOrElse(9) { "" },
-                members, groupMap, paymentRows, seenPhones, errors, "Row ${idx + 2}"
+                members, groupMap, paymentRows, seenPhones, errors, "Row ${idx + 2}",
+                paidDateStr      = cols.getOrElse(10) { "" }
             )
         }
     } catch (e: Exception) {

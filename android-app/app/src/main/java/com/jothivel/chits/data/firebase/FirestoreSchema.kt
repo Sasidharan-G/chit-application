@@ -9,10 +9,14 @@ object FirestoreSchema {
     const val CHIT_MEMBERSHIPS = "chitMemberships"
     const val INSTALLMENTS = "installments"
 
+    /** Field on reference data / collections listing the UIDs of the active agents allowed to read it. */
+    const val AGENT_IDS = "agentIds"
+
     object Agent {
         const val NAME = "name"
         const val PHONE = "phone"
-        const val PIN_HASH = "pinHash"
+        const val AUTH_EMAIL = "authEmail"
+        const val GEN = "gen"
         const val IS_ACTIVE = "isActive"
         const val ASSIGNED_GROUPS = "assignedGroups"
         const val CREATED_AT = "createdAt"
@@ -36,5 +40,6 @@ object FirestoreSchema {
         const val STATUS = "status"
         const val SYNCED_TO_ADMIN = "syncedToAdmin"
         const val REQUEST_ID = "requestId"
+        const val AGENT_IDS = "agentIds"
     }
 }

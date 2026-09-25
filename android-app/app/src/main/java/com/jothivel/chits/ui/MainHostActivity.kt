@@ -7,6 +7,7 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.lifecycle.lifecycleScope
+import com.jothivel.chits.R
 import com.jothivel.chits.ui.base.BaseActivity
 import com.jothivel.chits.ui.settings.CsvImportActivity
 import com.jothivel.chits.ui.theme.JothiVelChitsTheme
@@ -21,15 +22,19 @@ import java.util.Locale
 
 class MainHostActivity : BaseActivity() {
 
+    private companion object {
+        const val IDLE_LOCK_MS = 3 * 60 * 1000L
+    }
+
     private val backupDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/x-sqlite3")) { uri ->
         uri?.let {
             lifecycleScope.launch {
                 val result = DataBackupHelper.backupDatabaseToUri(this@MainHostActivity, it)
                 if (result.isSuccess) {
                     com.jothivel.chits.utils.AppPreferences(this@MainHostActivity).setLastBackupAt()
-                    Toast.makeText(this@MainHostActivity, "Backup Saved Successfully!", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainHostActivity, getString(R.string.host_backup_saved), Toast.LENGTH_LONG).show()
                 } else {
-                    Toast.makeText(this@MainHostActivity, "Backup failed — check the selected folder/storage and try again. ${result.exceptionOrNull()?.message.orEmpty()}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainHostActivity, getString(R.string.host_backup_failed, result.exceptionOrNull()?.message.orEmpty()), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -40,9 +45,9 @@ class MainHostActivity : BaseActivity() {
             lifecycleScope.launch {
                 val result = DataBackupHelper.exportDataToCsv(this@MainHostActivity, it)
                 if (result.isSuccess) {
-                    Toast.makeText(this@MainHostActivity, "Data Exported Successfully!", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainHostActivity, getString(R.string.host_export_ok), Toast.LENGTH_LONG).show()
                 } else {
-                    Toast.makeText(this@MainHostActivity, "Export Failed: ${result.exceptionOrNull()?.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainHostActivity, getString(R.string.host_export_failed, result.exceptionOrNull()?.message.orEmpty()), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -53,13 +58,13 @@ class MainHostActivity : BaseActivity() {
             lifecycleScope.launch {
                 val result = DataBackupHelper.restoreDatabaseFromUri(this@MainHostActivity, it)
                 if (result.isSuccess) {
-                    Toast.makeText(this@MainHostActivity, "Data Restored Successfully! Restarting app...", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainHostActivity, getString(R.string.host_restore_ok), Toast.LENGTH_LONG).show()
                     val intent = Intent(this@MainHostActivity, com.jothivel.chits.ui.auth.LoginActivity::class.java)
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                     startActivity(intent)
                     finish()
                 } else {
-                    Toast.makeText(this@MainHostActivity, "Restore failed — select a valid Jothi Vel Chits backup file. ${result.exceptionOrNull()?.message.orEmpty()}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainHostActivity, getString(R.string.host_restore_failed, result.exceptionOrNull()?.message.orEmpty()), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -84,6 +89,29 @@ class MainHostActivity : BaseActivity() {
         showMainContent()
     }
 
+    // Idle lock: after a few minutes in the background the app asks for the PIN again. Before this, the
+    // session flag lived as long as the process, so a phone left (or lost) with the app in the recents
+    // list stayed open indefinitely.
+    private var backgroundedAt = 0L
+
+    override fun onStop() {
+        super.onStop()
+        if (!isChangingConfigurations) backgroundedAt = System.currentTimeMillis()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val away = if (backgroundedAt == 0L) 0L else System.currentTimeMillis() - backgroundedAt
+        backgroundedAt = 0L
+        if (away > IDLE_LOCK_MS) {
+            com.jothivel.chits.ui.auth.LoginActivity.isSessionActive = false
+            startActivity(Intent(this, com.jothivel.chits.ui.auth.LoginActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            })
+            finish()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         com.jothivel.chits.data.firebase.FirebaseSyncService.stop()
@@ -101,6 +129,8 @@ class MainHostActivity : BaseActivity() {
                         // could still see the previous agent's name/phone/assigned groups, and a
                         // deactivated agent could keep logging back in offline via the stale cache.
                         com.jothivel.chits.utils.AppPreferences(this@MainHostActivity).clearAgentSession()
+                        // Leave Firebase too, so the next person on this device never inherits this session.
+                        com.jothivel.chits.data.firebase.FirebaseSetup.signOut()
                         com.jothivel.chits.ui.auth.LoginActivity.isSessionActive = false
                         val intent = Intent(this@MainHostActivity, com.jothivel.chits.ui.auth.LoginActivity::class.java).apply {
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)

@@ -27,6 +27,10 @@ public interface MemberDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     void insertMember(MemberEntity member);
 
+    /** Inserts only rows that are not already present; existing local rows are left untouched. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    void insertAllIgnore(List<MemberEntity> members);
+
     @Query("UPDATE members SET name = :value WHERE id = :memberId")
     void updateName(String memberId, String value);
 
@@ -48,6 +52,9 @@ public interface MemberDao {
     @Query("SELECT * FROM members WHERE id = :memberId LIMIT 1")
     MemberEntity getMemberByIdSync(String memberId);
 
+    @Query("SELECT * FROM members WHERE UPPER(id) = UPPER(:memberId) LIMIT 1")
+    MemberEntity getMemberByIdIgnoreCaseSync(String memberId);
+
     @Query("SELECT * FROM members WHERE phone = :phone LIMIT 1")
     MemberEntity getMemberByPhoneSync(String phone);
 
@@ -59,7 +66,4 @@ public interface MemberDao {
 
     @Query("SELECT COUNT(*) FROM members WHERE selectedChitId = :chitId")
     LiveData<Integer> getMemberCountByChitId(String chitId);
-
-    @Query("DELETE FROM members")
-    void deleteAll();
 }

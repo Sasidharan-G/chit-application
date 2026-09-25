@@ -17,17 +17,19 @@ class AgentLoginViewModel(application: Application) : AndroidViewModel(applicati
 
     val loginSuccess = MutableLiveData<Boolean>()
     val loginError = MutableLiveData<String?>()
+    /** Changes on every error, even with the same message - see [LoginViewModel.getErrorSeq]. */
+    val errorSeq = MutableLiveData(0)
     val isLoading = MutableLiveData(false)
 
+    private fun fail(message: String) {
+        isLoading.value = false
+        loginError.value = message
+        errorSeq.value = (errorSeq.value ?: 0) + 1
+    }
+
     fun login(phone: String, pin: String) {
-        if (phone.isBlank()) {
-            loginError.value = "Enter your mobile number"
-            return
-        }
-        if (pin.length != 4) {
-            loginError.value = "Enter your 4-digit PIN"
-            return
-        }
+        if (phone.length != 10) return fail("Enter your 10-digit mobile number")
+        if (pin.length != 4) return fail("Enter your 4-digit PIN")
         isLoading.value = true
         viewModelScope.launch {
             when (val result = AgentAuthRepository.login(getApplication(), phone.trim(), pin)) {
@@ -35,10 +37,7 @@ class AgentLoginViewModel(application: Application) : AndroidViewModel(applicati
                     isLoading.value = false
                     loginSuccess.value = true
                 }
-                is AgentLoginResult.Failure -> {
-                    isLoading.value = false
-                    loginError.value = result.message
-                }
+                is AgentLoginResult.Failure -> fail(result.message)
             }
         }
     }

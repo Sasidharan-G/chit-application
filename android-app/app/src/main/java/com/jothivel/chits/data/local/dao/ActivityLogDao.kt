@@ -18,6 +18,9 @@ interface ActivityLogDao {
     @Query("SELECT * FROM activity_logs ORDER BY timestamp DESC")
     fun getAllSync(): List<ActivityLogEntity>
 
+    @Query("SELECT * FROM activity_logs WHERE actionType = :actionType ORDER BY timestamp DESC")
+    fun getByTypeSync(actionType: String): List<ActivityLogEntity>
+
     @Query("DELETE FROM activity_logs")
     fun clearLogs()
 }

@@ -46,7 +46,8 @@ fun PremiumInputField(
     minLines: Int = 1,
     readOnly: Boolean = false,
     enabled: Boolean = true,
-    colors: TextFieldColors? = null
+    colors: TextFieldColors? = null,
+    visualTransformation: androidx.compose.ui.text.input.VisualTransformation = androidx.compose.ui.text.input.VisualTransformation.None
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val focused by interactionSource.collectIsFocusedAsState()
@@ -61,6 +62,7 @@ fun PremiumInputField(
         modifier = modifier.shadow(elevation, shape, clip = false, ambientColor = MaroonPrimary.copy(alpha = .08f), spotColor = MaroonPrimary.copy(alpha = .10f)).defaultMinSize(minHeight = 50.dp),
         enabled = enabled,
         readOnly = readOnly,
+        visualTransformation = visualTransformation,
         label = { Text(label, fontSize = 10.sp, fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Normal) },
         placeholder = placeholder?.let { text -> { Text(text, fontSize = 11.sp, color = TextGray.copy(alpha = .75f)) } },
         leadingIcon = leadingIcon?.let { icon ->

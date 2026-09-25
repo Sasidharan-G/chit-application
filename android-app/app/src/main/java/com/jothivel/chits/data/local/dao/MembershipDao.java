@@ -36,6 +36,15 @@ public interface MembershipDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     void upsertAll(List<ChitMembershipEntity> memberships);
 
+    @Query("SELECT * FROM chit_memberships WHERE groupId = :groupId")
+    List<ChitMembershipEntity> getAllForGroupSync(String groupId);
+
+    @Query("UPDATE chit_memberships SET isActive = :active WHERE memberId = :memberId AND groupId = :groupId")
+    int setActive(String memberId, String groupId, boolean active);
+
+    @Query("SELECT COUNT(*) FROM chit_memberships WHERE groupId = :groupId AND ticketNo = :ticketNo AND memberId != :excludeMemberId")
+    int countTicketUsedByOthersSync(String groupId, String ticketNo, String excludeMemberId);
+
     @Query("UPDATE chit_memberships SET ticketNo = :value WHERE memberId = :memberId AND groupId = :groupId")
     void updateTicketNo(String memberId, String groupId, String value);
 
@@ -44,7 +53,4 @@ public interface MembershipDao {
 
     @Query("UPDATE chit_memberships SET dueDate = :value WHERE memberId = :memberId AND groupId = :groupId")
     void updateDueDate(String memberId, String groupId, String value);
-
-    @Query("DELETE FROM chit_memberships")
-    void deleteAll();
 }

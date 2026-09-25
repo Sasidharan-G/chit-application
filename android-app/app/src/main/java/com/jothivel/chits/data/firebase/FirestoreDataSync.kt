@@ -22,19 +22,28 @@ object FirestoreDataSync {
 
     suspend fun syncAllToCloud(context: Context): Result<SyncResult> {
         val firestore = FirebaseSetup.firestoreIfSignedIn(context)
-            ?: return Result.failure(IllegalStateException("Firebase not configured, or not signed in. Add app/google-services.json and check connectivity."))
+            ?: return Result.failure(IllegalStateException("Cloud account is not connected. Open Settings > Cloud account, sign in with the admin email, and check the internet connection."))
         return try {
             val db = AppDatabase.getDatabase(context)
-            val groups = db.groupDao().getAllGroupsSync().filter { it.status.isNullOrBlank() || it.status == "ACTIVE" }
+            // Push everything - including closed chits, deactivated members and memberships that
+            // have left a chit - so those changes reach the agents' phones and a restore. Sending
+            // only active rows meant a removal never overwrote the stale "active" copy in the cloud.
+            // (Agent screens only offer ACTIVE chits and active members, so closed data is inert there.)
+            val groups = db.groupDao().getAllGroupsSync()
             val groupIds = groups.mapTo(hashSetOf()) { it.id }
-            val members = db.memberDao().getAllMembersSync().filter { it.isActive }
-            val memberships = db.membershipDao().getAllActiveSync().filter { it.groupId in groupIds }
+            val members = db.memberDao().getAllMembersSync()
+            val memberships = groupIds.flatMap { db.membershipDao().getAllForGroupSync(it) }
             val installments = groupIds.flatMap { db.installmentDao().getInstallmentsForGroupSync(it) }
 
-            writeInBatches(firestore, FirestoreSchema.CHIT_GROUPS, groups) { it.id to groupMap(it) }
-            writeInBatches(firestore, FirestoreSchema.MEMBERS, members) { it.id to memberMap(it) }
-            writeInBatches(firestore, FirestoreSchema.CHIT_MEMBERSHIPS, memberships) { it.id to membershipMap(it) }
-            writeInBatches(firestore, FirestoreSchema.INSTALLMENTS, installments) { it.id to installmentMap(it) }
+            // Every document is stamped with the agents allowed to read it (see firestore.rules).
+            val access = loadAgentAccess(firestore)
+            val agentsByMember = HashMap<String, MutableSet<String>>()
+            memberships.forEach { agentsByMember.getOrPut(it.memberId) { linkedSetOf() }.addAll(access[it.groupId].orEmpty()) }
+
+            writeInBatches(firestore, FirestoreSchema.CHIT_GROUPS, groups) { it.id to groupMap(it, access[it.id].orEmpty()) }
+            writeInBatches(firestore, FirestoreSchema.MEMBERS, members) { it.id to memberMap(it, agentsByMember[it.id].orEmpty()) }
+            writeInBatches(firestore, FirestoreSchema.CHIT_MEMBERSHIPS, memberships) { it.id to membershipMap(it, access[it.groupId].orEmpty()) }
+            writeInBatches(firestore, FirestoreSchema.INSTALLMENTS, installments) { it.id to installmentMap(it, access[it.groupId].orEmpty()) }
 
             Result.success(SyncResult(groups.size, members.size, memberships.size, installments.size))
         } catch (e: Exception) {
@@ -48,13 +57,13 @@ object FirestoreDataSync {
      * Admin-only pull of everything back down from Firestore into local Room - the counterpart
      * to [syncAllToCloud]. Meant for the "I uninstalled/lost the app, reinstalled, need my data
      * back" scenario: as long a "Sync Data to Cloud" push happened at some point before that,
-     * this rebuilds the local database from what's in the cloud. Uses the same insert/upsert
-     * helpers as [AgentDataSync] (IGNORE-on-conflict for groups/members/installments, REPLACE
-     * for memberships), so it's safe to run even if some local data already exists.
+     * this rebuilds the local database from what's in the cloud. Every table is inserted with
+     * IGNORE-on-conflict, so rows that already exist on this device are never overwritten by an
+     * older cloud snapshot - it only fills in what is missing.
      */
     suspend fun restoreAllFromCloud(context: Context): Result<RestoreResult> {
         val firestore = FirebaseSetup.firestoreIfSignedIn(context)
-            ?: return Result.failure(IllegalStateException("Firebase not configured, or not signed in. Add app/google-services.json and check connectivity."))
+            ?: return Result.failure(IllegalStateException("Cloud account is not connected. Open Settings > Cloud account, sign in with the admin email, and check the internet connection."))
         return try {
             val db = AppDatabase.getDatabase(context)
 
@@ -71,7 +80,7 @@ object FirestoreDataSync {
                     status = doc.getString("status") ?: "ACTIVE"
                 }
             }
-            db.groupDao().insertAll(groups)
+            db.groupDao().insertAllIgnore(groups)
 
             val members = firestore.collection(FirestoreSchema.MEMBERS).get().await().documents.map { doc ->
                 // Fall back to the existing local row for any field the cloud document doesn't
@@ -106,7 +115,7 @@ object FirestoreDataSync {
                     nomineeRelationship = doc.getString("nomineeRelationship") ?: existing?.nomineeRelationship
                 }
             }
-            db.memberDao().insertAll(members)
+            db.memberDao().insertAllIgnore(members)
 
             val memberships = firestore.collection(FirestoreSchema.CHIT_MEMBERSHIPS).get().await().documents.mapNotNull { doc ->
                 val memberId = doc.getString("memberId") ?: return@mapNotNull null
@@ -122,7 +131,7 @@ object FirestoreDataSync {
                     isActive = doc.getBoolean("isActive") ?: true
                 }
             }
-            db.membershipDao().upsertAll(memberships)
+            db.membershipDao().insertAll(memberships)
 
             val installments = firestore.collection(FirestoreSchema.INSTALLMENTS).get().await().documents.map { doc ->
                 InstallmentEntity().apply {
@@ -137,7 +146,7 @@ object FirestoreDataSync {
                     winningMemberId = doc.getString("winningMemberId")
                 }
             }
-            db.installmentDao().insertAll(installments)
+            db.installmentDao().insertAllIgnore(installments)
 
             // Restore actual payment/receipt history too - CollectionService.record() is
             // idempotent on requestId, so re-running restore (or restoring on top of a device
@@ -157,7 +166,12 @@ object FirestoreDataSync {
                 val agentName = doc.getString(FirestoreSchema.Collection.AGENT_NAME)?.ifBlank { null }
                 val agentId = doc.getString(FirestoreSchema.Collection.AGENT_ID)?.ifBlank { null }
                 runCatching {
-                    CollectionService.record(db, requestId, memberId, memberName, groupId, amountPaise, mode, referenceNo, notes, businessDate, agentName, agentId)
+                    CollectionService.record(
+                        db, requestId, memberId, memberName, groupId, amountPaise, mode, referenceNo, notes, businessDate, agentName, agentId,
+                        receiptNoOverride = doc.getString(FirestoreSchema.Collection.RECEIPT_NO),
+                        paidAtOverride = doc.getTimestamp(FirestoreSchema.Collection.TIMESTAMP)?.toDate()?.time,
+                        logActivity = false
+                    )
                     restoredCollections++
                 }
             }
@@ -165,6 +179,66 @@ object FirestoreDataSync {
             Result.success(RestoreResult(groups.size, members.size, memberships.size, installments.size, restoredCollections))
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    /** groupId -> UIDs of the ACTIVE agents assigned to it (only the admin can list `agents`). */
+    private suspend fun loadAgentAccess(firestore: FirebaseFirestore): Map<String, List<String>> {
+        val access = HashMap<String, MutableList<String>>()
+        firestore.collection(FirestoreSchema.AGENTS).get().await().documents
+            .filter { it.getBoolean(FirestoreSchema.Agent.IS_ACTIVE) == true }
+            .forEach { agent ->
+                @Suppress("UNCHECKED_CAST")
+                (agent.get(FirestoreSchema.Agent.ASSIGNED_GROUPS) as? List<String>).orEmpty().forEach { groupId ->
+                    access.getOrPut(groupId) { mutableListOf() }.add(agent.id)
+                }
+            }
+        return access.mapValues { it.value.sorted() }
+    }
+
+    /**
+     * Re-stamps `agentIds` on everything already in the cloud after assignments, PINs or active flags
+     * change, so a newly assigned agent can see the chit (and its earlier collections) and a removed or
+     * deactivated one immediately loses access. Only documents whose list actually changes are written.
+     */
+    suspend fun refreshAgentAccess(context: Context): Result<Unit> {
+        val firestore = FirebaseSetup.firestoreIfSignedIn(context)
+            ?: return Result.failure(IllegalStateException("Cloud account is not connected."))
+        return try {
+            val access = loadAgentAccess(firestore)
+            val memberships = firestore.collection(FirestoreSchema.CHIT_MEMBERSHIPS).get().await().documents
+            val agentsByMember = HashMap<String, MutableSet<String>>()
+            memberships.forEach { m ->
+                val memberId = m.getString("memberId") ?: return@forEach
+                val groupId = m.getString("groupId") ?: return@forEach
+                agentsByMember.getOrPut(memberId) { linkedSetOf() }.addAll(access[groupId].orEmpty())
+            }
+            restamp(firestore, FirestoreSchema.CHIT_GROUPS, firestore.collection(FirestoreSchema.CHIT_GROUPS).get().await().documents) { access[it.id].orEmpty() }
+            restamp(firestore, FirestoreSchema.CHIT_MEMBERSHIPS, memberships) { access[it.getString("groupId")].orEmpty() }
+            restamp(firestore, FirestoreSchema.INSTALLMENTS, firestore.collection(FirestoreSchema.INSTALLMENTS).get().await().documents) { access[it.getString("groupId")].orEmpty() }
+            restamp(firestore, FirestoreSchema.MEMBERS, firestore.collection(FirestoreSchema.MEMBERS).get().await().documents) { agentsByMember[it.id]?.sorted().orEmpty() }
+            restamp(firestore, FirestoreSchema.COLLECTIONS, firestore.collection(FirestoreSchema.COLLECTIONS).get().await().documents) { access[it.getString("groupId")].orEmpty() }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun restamp(
+        firestore: FirebaseFirestore,
+        collection: String,
+        docs: List<com.google.firebase.firestore.DocumentSnapshot>,
+        wanted: (com.google.firebase.firestore.DocumentSnapshot) -> List<String>
+    ) {
+        val changed = docs.filter { doc ->
+            @Suppress("UNCHECKED_CAST")
+            val current = (doc.get(FirestoreSchema.AGENT_IDS) as? List<String>).orEmpty().sorted()
+            current != wanted(doc).sorted()
+        }
+        changed.chunked(400).forEach { chunk ->
+            val batch = firestore.batch()
+            chunk.forEach { doc -> batch.update(firestore.collection(collection).document(doc.id), FirestoreSchema.AGENT_IDS, wanted(doc).sorted()) }
+            batch.commit().await()
         }
     }
 
@@ -179,7 +253,7 @@ object FirestoreDataSync {
         }
     }
 
-    private fun groupMap(group: ChitGroupEntity): Map<String, Any?> = mapOf(
+    private fun groupMap(group: ChitGroupEntity, agentIds: Collection<String>): Map<String, Any?> = mapOf(
         "name" to group.name,
         "registerNo" to group.registerNo,
         "chitValue" to group.chitValue,
@@ -187,10 +261,12 @@ object FirestoreDataSync {
         "subscriberCount" to group.subscriberCount,
         "branch" to group.branch,
         "startDate" to group.startDate,
-        "status" to group.status
+        "status" to group.status,
+        FirestoreSchema.AGENT_IDS to agentIds.toList()
     )
 
-    private fun memberMap(member: MemberEntity): Map<String, Any?> = mapOf(
+    /** Aadhaar reference and document paths are deliberately NOT sent to the cloud (agents can read members). */
+    private fun memberMap(member: MemberEntity, agentIds: Collection<String>): Map<String, Any?> = mapOf(
         "name" to member.name,
         "phone" to member.phone,
         "photoUrl" to member.photoUrl,
@@ -204,29 +280,28 @@ object FirestoreDataSync {
         "city" to member.city,
         "state" to member.state,
         "pincode" to member.pincode,
-        "aadhaarNoEncrypted" to member.aadhaarNoEncrypted,
         "panNo" to member.panNo,
-        "aadhaarDocumentPath" to member.aadhaarDocumentPath,
-        "panDocumentPath" to member.panDocumentPath,
         "selectedChitId" to member.selectedChitId,
         "ticketNo" to member.ticketNo,
         "installmentAmount" to member.installmentAmount,
         "joiningDate" to member.joiningDate,
         "dueDate" to member.dueDate,
-        "nomineeRelationship" to member.nomineeRelationship
+        "nomineeRelationship" to member.nomineeRelationship,
+        FirestoreSchema.AGENT_IDS to agentIds.toList()
     )
 
-    private fun membershipMap(membership: ChitMembershipEntity): Map<String, Any?> = mapOf(
+    private fun membershipMap(membership: ChitMembershipEntity, agentIds: Collection<String>): Map<String, Any?> = mapOf(
         "memberId" to membership.memberId,
         "groupId" to membership.groupId,
         "ticketNo" to membership.ticketNo,
         "installmentAmountPaise" to membership.installmentAmountPaise,
         "joiningDate" to membership.joiningDate,
         "dueDate" to membership.dueDate,
-        "isActive" to membership.isActive
+        "isActive" to membership.isActive,
+        FirestoreSchema.AGENT_IDS to agentIds.toList()
     )
 
-    private fun installmentMap(installment: InstallmentEntity): Map<String, Any?> = mapOf(
+    private fun installmentMap(installment: InstallmentEntity, agentIds: Collection<String>): Map<String, Any?> = mapOf(
         "groupId" to installment.groupId,
         "installmentNo" to installment.installmentNo,
         "baseAmount" to installment.baseAmount,
@@ -234,6 +309,7 @@ object FirestoreDataSync {
         "payoutAmount" to installment.payoutAmount,
         "auctionDate" to installment.auctionDate,
         "status" to installment.status,
-        "winningMemberId" to installment.winningMemberId
+        "winningMemberId" to installment.winningMemberId,
+        FirestoreSchema.AGENT_IDS to agentIds.toList()
     )
 }

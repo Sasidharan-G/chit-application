@@ -2,7 +2,9 @@ package com.jothivel.chits.data.local
 
 import com.jothivel.chits.data.local.entity.ActivityLogEntity
 import com.jothivel.chits.data.local.entity.ChitGroupEntity
+import com.jothivel.chits.data.local.entity.ChitMembershipEntity
 import com.jothivel.chits.data.local.entity.CollectionReceiptEntity
+import com.jothivel.chits.data.local.entity.InstallmentEntity
 import com.jothivel.chits.data.local.entity.PaymentEntity
 import com.jothivel.chits.data.models.ChitTemplate
 import java.text.SimpleDateFormat
@@ -134,10 +136,27 @@ object CollectionService {
         val installments = db.installmentDao().getInstallmentsForGroupSync(groupId)
         if (installments.isEmpty()) return DueBreakdown(0, 0, 0, emptyList(), "-", 0, null)
         val membership = db.membershipDao().getSync(memberId, groupId)
+        val payments = db.paymentDao().getPaymentsByMemberSync(memberId).filter { it.groupId == groupId }
+        return calculateDueBreakdown(group, installments, membership, payments, asOf)
+    }
+
+    /**
+     * The same due/paid/pending calculation as the database-backed overload above, but over rows
+     * the caller has already loaded. Screens that list many members (Pending, group detail) load
+     * the groups, installments and payments once and call this per member instead of issuing
+     * four queries per row. [payments] must already be limited to this member and group.
+     */
+    fun calculateDueBreakdown(
+        group: ChitGroupEntity,
+        installments: List<InstallmentEntity>,
+        membership: ChitMembershipEntity?,
+        payments: List<PaymentEntity>,
+        asOf: Date = Date()
+    ): DueBreakdown {
+        if (installments.isEmpty()) return DueBreakdown(0, 0, 0, emptyList(), "-", 0, null)
         val dueCount = installmentsDue(group.startDate, asOf, group.durationMonths).coerceAtMost(installments.size)
         val dueInstallments = installments.take(dueCount)
         fun scheduledAmount(base: Int, kasaru: Int?) = scheduledAmountPaise(group, membership?.installmentAmountPaise, base, kasaru).coerceAtLeast(0L)
-        val payments = db.paymentDao().getPaymentsByMemberSync(memberId).filter { it.groupId == groupId }
         val scheduledPayable = dueInstallments.sumOf { scheduledAmount(it.baseAmount, it.kasaruAmount) }
         val totalPaid = payments.sumOf { it.amountPaid }
         var credit = payments.filter { it.installmentId.equals("ADVANCE", true) }.sumOf { it.amountPaid }
@@ -182,7 +201,13 @@ object CollectionService {
         notes: String,
         businessDate: String = todayKey(),
         collectedBy: String? = null,
-        collectedByAgentId: String? = null
+        collectedByAgentId: String? = null,
+        // Set when replaying a collection that already has an identity elsewhere (an agent's
+        // receipt pulled from the cloud): keeps the receipt number the customer was handed and
+        // the time it was actually taken, instead of minting new ones at replay time.
+        receiptNoOverride: String? = null,
+        paidAtOverride: Long? = null,
+        logActivity: Boolean = true
     ): SavedCollection {
         require(amountPaise > 0) { "Enter a valid amount" }
         require(mode == "Cash" || !referenceNo.isNullOrBlank()) { "Reference / UTR is required" }
@@ -196,8 +221,9 @@ object CollectionService {
         val installments = db.installmentDao().getInstallmentsForGroupSync(groupId)
         require(installments.isNotEmpty()) { "No installment schedule found for this chit" }
 
-        val receiptNo = "JVC-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}-${UUID.randomUUID().toString().take(4).uppercase()}"
-        val paidAt = System.currentTimeMillis()
+        val receiptNo = receiptNoOverride?.takeIf { it.isNotBlank() }
+            ?: "JVC-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}-${UUID.randomUUID().toString().take(4).uppercase()}"
+        val paidAt = paidAtOverride ?: System.currentTimeMillis()
         var saved: SavedCollection? = null
 
         db.runInTransaction {
@@ -235,7 +261,7 @@ object CollectionService {
             if (remaining > 0) {
                 db.paymentDao().insertPayment(paymentLine(memberId, groupId, "ADVANCE", remaining, mode, referenceNo, receiptNo, paidAt, "ADVANCE", collectedBy, collectedByAgentId))
             }
-            db.activityLogDao().insertLog(
+            if (logActivity) db.activityLogDao().insertLog(
                 ActivityLogEntity(
                     actionType = "PAYMENT_RECORDED",
                     title = "Collection received",
@@ -246,6 +272,40 @@ object CollectionService {
             saved = SavedCollection(receiptNo, amountPaise, mode, businessDate, receipt.referenceNo)
         }
         return checkNotNull(saved)
+    }
+
+    /**
+     * Cancels a saved collection that was entered wrongly. The receipt stays on record as VOIDED with
+     * the reason and time (so the audit trail is intact and the same request can never be replayed from
+     * the cloud), but the allocations it created are removed, so dues, totals and passbooks no longer
+     * count it. Returns the receipt so the caller can also mark it voided in the cloud.
+     */
+    fun voidReceipt(db: AppDatabase, receiptId: String, reason: String, now: Long = System.currentTimeMillis()): CollectionReceiptEntity {
+        require(reason.trim().length >= 4) { "Enter a reason for voiding this receipt" }
+        var receipt: CollectionReceiptEntity? = null
+        db.runInTransaction {
+            val found = db.collectionReceiptDao().getByIdSync(receiptId) ?: throw IllegalStateException("Receipt was not found")
+            check(found.status == "SAVED") { "This receipt is already voided" }
+            db.paymentDao().deleteByReceipt(found.receiptNo, found.memberId, found.groupId)
+            check(db.collectionReceiptDao().markVoided(found.id, reason.trim(), now) == 1) { "This receipt is already voided" }
+            db.activityLogDao().insertLog(
+                ActivityLogEntity(
+                    actionType = "RECEIPT_VOIDED", title = "Receipt voided",
+                    description = "${found.receiptNo} • ${found.memberId} • ₹${found.amountPaidPaise / 100} • ${reason.trim()}",
+                    timestamp = now
+                )
+            )
+            receipt = found
+        }
+        return checkNotNull(receipt)
+    }
+
+    /** Same as [voidReceipt] but looked up by the collection's request id (used when a void arrives from the cloud). */
+    fun voidByRequestId(db: AppDatabase, requestId: String, reason: String): Boolean {
+        val receipt = db.collectionReceiptDao().getByRequestIdSync(requestId) ?: return false
+        if (receipt.status != "SAVED") return false
+        voidReceipt(db, receipt.id, reason.ifBlank { "Voided by admin" })
+        return true
     }
 
     private fun paymentLine(memberId: String, groupId: String, installmentId: String, amount: Long, mode: String, reference: String?, receipt: String, paidAt: Long, status: String, collectedBy: String? = null, collectedByAgentId: String? = null) =
@@ -264,13 +324,21 @@ object CollectionService {
             this.collectedByAgentId = collectedByAgentId
         }
 
+    /**
+     * How many installments have fallen due as of [asOf]. Installment N is due on the group's
+     * start date plus (N - 1) months, so a chit that starts on the 25th only owes its second
+     * installment from the 25th of the next month - not from the 1st, which is what counting
+     * whole calendar months used to do (it showed members as pending weeks early).
+     */
     private fun installmentsDue(start: String?, asOf: Date, duration: Int): Int {
         val startDate = parseDate(start) ?: return 1.coerceAtMost(duration)
-        if (startDate.after(asOf)) return 0
         val from = Calendar.getInstance().apply { time = startDate }
         val to = Calendar.getInstance().apply { time = asOf }
-        return ((to.get(Calendar.YEAR) - from.get(Calendar.YEAR)) * 12 + to.get(Calendar.MONTH) - from.get(Calendar.MONTH) + 1)
-            .coerceIn(0, duration)
+        var months = (to.get(Calendar.YEAR) - from.get(Calendar.YEAR)) * 12 + to.get(Calendar.MONTH) - from.get(Calendar.MONTH)
+        if (months < 0) return 0
+        val candidateDue = Calendar.getInstance().apply { time = startDate; add(Calendar.MONTH, months) }.time
+        if (dayStart(candidateDue).after(dayStart(asOf))) months -= 1
+        return (months + 1).coerceIn(0, duration)
     }
 
     private fun parseDate(value: String?): Date? {

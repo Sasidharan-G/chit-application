@@ -54,24 +54,39 @@ object FirebaseSyncService {
         registration = null
     }
 
+    /**
+     * Applies one agent collection to the admin's ledger and only THEN marks it synced. If applying
+     * fails (customer not active here, chit unknown, ...) the document is left unsynced so it is retried
+     * on the next start, instead of being flagged as applied and silently vanishing from the ledger.
+     * The agent's receipt number and the time it was taken are kept.
+     */
     private suspend fun applyToRoom(context: Context, firestore: FirebaseFirestore, doc: DocumentSnapshot) {
         try {
             val memberId = doc.getString(FirestoreSchema.Collection.MEMBER_ID)
             val groupId = doc.getString(FirestoreSchema.Collection.GROUP_ID)
             val amountPaise = doc.getLong(FirestoreSchema.Collection.AMOUNT_PAISE) ?: 0L
-            if (memberId != null && groupId != null && amountPaise > 0) {
-                val db = AppDatabase.getDatabase(context)
-                val requestId = doc.getString(FirestoreSchema.Collection.REQUEST_ID) ?: doc.id
-                val memberName = doc.getString(FirestoreSchema.Collection.MEMBER_NAME).orEmpty()
-                val mode = doc.getString(FirestoreSchema.Collection.MODE) ?: "Cash"
-                val referenceNo = doc.getString(FirestoreSchema.Collection.REFERENCE_NO)
-                val notes = doc.getString(FirestoreSchema.Collection.NOTES).orEmpty()
-                val businessDate = doc.getString(FirestoreSchema.Collection.BUSINESS_DATE) ?: CollectionService.todayKey()
-                val agentName = doc.getString(FirestoreSchema.Collection.AGENT_NAME)
-                val agentId = doc.getString(FirestoreSchema.Collection.AGENT_ID)
-                runCatching {
-                    CollectionService.record(db, requestId, memberId, memberName, groupId, amountPaise, mode, referenceNo, notes, businessDate, agentName, agentId)
-                }.onFailure { Log.e(TAG, "CollectionService.record failed for ${doc.id}", it) }
+            if (memberId == null || groupId == null || amountPaise <= 0) {
+                Log.e(TAG, "Collection ${doc.id} is malformed and was not applied")
+                return
+            }
+            val db = AppDatabase.getDatabase(context)
+            val requestId = doc.getString(FirestoreSchema.Collection.REQUEST_ID) ?: doc.id
+            try {
+                CollectionService.record(
+                    db, requestId, memberId,
+                    doc.getString(FirestoreSchema.Collection.MEMBER_NAME).orEmpty(), groupId, amountPaise,
+                    doc.getString(FirestoreSchema.Collection.MODE) ?: "Cash",
+                    doc.getString(FirestoreSchema.Collection.REFERENCE_NO),
+                    doc.getString(FirestoreSchema.Collection.NOTES).orEmpty(),
+                    doc.getString(FirestoreSchema.Collection.BUSINESS_DATE) ?: CollectionService.todayKey(),
+                    doc.getString(FirestoreSchema.Collection.AGENT_NAME),
+                    doc.getString(FirestoreSchema.Collection.AGENT_ID),
+                    receiptNoOverride = doc.getString(FirestoreSchema.Collection.RECEIPT_NO),
+                    paidAtOverride = doc.getTimestamp(FirestoreSchema.Collection.TIMESTAMP)?.toDate()?.time
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Could not apply collection ${doc.id}; it stays unsynced and will be retried", e)
+                return
             }
             firestore.collection(FirestoreSchema.COLLECTIONS).document(doc.id)
                 .update(FirestoreSchema.Collection.SYNCED_TO_ADMIN, true)

@@ -2,6 +2,7 @@ package com.jothivel.chits.data.firebase
 
 import android.content.Context
 import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -27,13 +28,17 @@ data class AgentCollectionDoc(
     // true when the caller (the admin's own Collect screen) already applied this to its own
     // Room DB directly - FirebaseSyncService should not re-apply it. Agent collections leave
     // this false so the admin's listener picks them up and mirrors them in.
-    val syncedToAdmin: Boolean = false
+    val syncedToAdmin: Boolean = false,
+    // UIDs allowed to read this document. Filled in from the chit's own `agentIds` when the document
+    // is written (the security rules require it to match the chit's list exactly).
+    val agentIds: List<String> = emptyList()
 )
 
 /**
- * Pushes an agent's collection to Firestore `collections/{requestId}` (the admin's
- * [FirebaseSyncService] listens for `syncedToAdmin == false` docs and mirrors them into Room).
- * requestId doubles as the document id so a retried write can never create a duplicate.
+ * Pushes a collection to Firestore `collections/{requestId}` (the admin's [FirebaseSyncService] listens
+ * for `syncedToAdmin == false` docs and mirrors them into Room). requestId doubles as the document id so
+ * a retried write can never create a duplicate. The security rules make a collection create-only: once it
+ * exists nobody can change or delete it, so a retry that finds it already there counts as success.
  *
  * Offline-first: a failed write is queued in SharedPreferences and retried by [flushPending]
  * the next time the agent app has connectivity (called from the agent screens on start/refresh).
@@ -57,10 +62,9 @@ object AgentCollectionSync {
             queueMutex.withLock { queueLocked(context, doc) }
             return@withContext false
         }
-        try {
-            firestore.collection(FirestoreSchema.COLLECTIONS).document(doc.requestId).set(toMap(doc)).await()
+        if (writeOne(firestore, doc)) {
             true
-        } catch (e: Exception) {
+        } else {
             queueMutex.withLock { queueLocked(context, doc) }
             false
         }
@@ -75,16 +79,33 @@ object AgentCollectionSync {
             var flushed = 0
             val remaining = mutableListOf<AgentCollectionDoc>()
             pending.forEach { doc ->
-                try {
-                    firestore.collection(FirestoreSchema.COLLECTIONS).document(doc.requestId).set(toMap(doc)).await()
-                    flushed++
-                } catch (e: Exception) {
-                    remaining += doc
-                }
+                if (writeOne(firestore, doc)) flushed++ else remaining += doc
             }
             writeQueue(prefs, remaining)
             flushed
         }
+    }
+
+    /** True when the document is (now) safely in the cloud. */
+    private suspend fun writeOne(firestore: FirebaseFirestore, doc: AgentCollectionDoc): Boolean {
+        val ref = firestore.collection(FirestoreSchema.COLLECTIONS).document(doc.requestId)
+        return try {
+            val agentIds = doc.agentIds.ifEmpty { chitAgentIds(firestore, doc.groupId) }
+            // An agent's payment must name the agents allowed to see it; the admin's own (already applied) ones may have none.
+            if (agentIds.isEmpty() && !doc.syncedToAdmin) return false // chit not visible yet - keep it queued
+            ref.set(toMap(doc.copy(agentIds = agentIds))).await()
+            true
+        } catch (e: Exception) {
+            // A retry of a write that actually succeeded earlier is refused (documents are immutable),
+            // which is the good case: it is already there.
+            runCatching { ref.get().await().exists() }.getOrDefault(false)
+        }
+    }
+
+    private suspend fun chitAgentIds(firestore: FirebaseFirestore, groupId: String): List<String> {
+        val group = firestore.collection(FirestoreSchema.CHIT_GROUPS).document(groupId).get().await()
+        @Suppress("UNCHECKED_CAST")
+        return (group.get(FirestoreSchema.AGENT_IDS) as? List<String>).orEmpty()
     }
 
     fun pendingCount(context: Context): Int =
@@ -113,7 +134,8 @@ object AgentCollectionSync {
         FirestoreSchema.Collection.TIMESTAMP to FieldValue.serverTimestamp(),
         FirestoreSchema.Collection.STATUS to doc.status,
         FirestoreSchema.Collection.SYNCED_TO_ADMIN to doc.syncedToAdmin,
-        FirestoreSchema.Collection.REQUEST_ID to doc.requestId
+        FirestoreSchema.Collection.REQUEST_ID to doc.requestId,
+        FirestoreSchema.Collection.AGENT_IDS to doc.agentIds
     )
 
     internal fun readQueue(prefs: android.content.SharedPreferences): List<AgentCollectionDoc> {
@@ -122,6 +144,7 @@ object AgentCollectionSync {
             val array = JSONArray(raw)
             (0 until array.length()).map { i ->
                 val o = array.getJSONObject(i)
+                val ids = o.optJSONArray("agentIds")
                 AgentCollectionDoc(
                     requestId = o.getString("requestId"),
                     agentId = o.getString("agentId"),
@@ -137,7 +160,8 @@ object AgentCollectionSync {
                     notes = o.optString("notes"),
                     businessDate = o.getString("businessDate"),
                     status = o.getString("status"),
-                    syncedToAdmin = o.optBoolean("syncedToAdmin", false)
+                    syncedToAdmin = o.optBoolean("syncedToAdmin", false),
+                    agentIds = if (ids == null) emptyList() else (0 until ids.length()).map { ids.getString(it) }
                 )
             }
         }.getOrDefault(emptyList())
@@ -162,6 +186,7 @@ object AgentCollectionSync {
                 put("businessDate", doc.businessDate)
                 put("status", doc.status)
                 put("syncedToAdmin", doc.syncedToAdmin)
+                put("agentIds", JSONArray(doc.agentIds))
             })
         }
         prefs.edit().putString(KEY_QUEUE, array.toString()).apply()

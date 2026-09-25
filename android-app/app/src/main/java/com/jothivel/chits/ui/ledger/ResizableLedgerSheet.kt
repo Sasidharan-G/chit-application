@@ -53,6 +53,7 @@ import com.jothivel.chits.ui.components.BottomSheetPickerField
 import com.jothivel.chits.ui.components.PremiumInputField
 import com.jothivel.chits.ui.theme.*
 import com.jothivel.chits.data.local.AppDatabase
+import com.jothivel.chits.data.local.LedgerEditService
 import com.jothivel.chits.data.local.CollectionService
 import com.jothivel.chits.utils.CsvDownloadHelper
 import kotlinx.coroutines.Dispatchers
@@ -308,6 +309,7 @@ fun ResizableLedgerSheet(onBack: () -> Unit) {
 
     editingCell?.let { (row, columnIndex) ->
         val fieldUpdatedText = stringResource(R.string.ledger_field_updated, sheetColumns[columnIndex].title)
+        val editFailedText = stringResource(R.string.ledger_edit_failed)
         Dialog(
             onDismissRequest = { editingCell = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -340,22 +342,36 @@ fun ResizableLedgerSheet(onBack: () -> Unit) {
                                 rows[rowIndex] = updated
                                 if (selectedRow === row) selectedRow = updated
                                 
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    persistLedgerEdit(AppDatabase.getDatabase(context), row, columnIndex, editValue.trim())
-                                }
-                                
+                                val newValue = editValue.trim()
                                 coroutineScope.launch {
+                                    // Save first; the screen only keeps the new value if the database accepted it.
+                                    val saved = withContext(Dispatchers.IO) {
+                                        runCatching { LedgerEditService.edit(AppDatabase.getDatabase(context), row.memberId, row.groupId, columnIndex, newValue) }
+                                    }
+                                    saved.exceptionOrNull()?.let { failure ->
+                                        val at = rows.indexOfFirst { it === updated }
+                                        if (at >= 0) rows[at] = oldRow
+                                        if (selectedRow === updated) selectedRow = oldRow
+                                        snackbarHostState.showSnackbar(String.format(editFailedText, failure.message.orEmpty()))
+                                        return@launch
+                                    }
                                     val result = snackbarHostState.showSnackbar(
                                         message = fieldUpdatedText,
                                         actionLabel = undoLabel,
                                         duration = SnackbarDuration.Long
                                     )
                                     if (result == SnackbarResult.ActionPerformed) {
-                                        // Undo action
-                                        rows[rowIndex] = oldRow
-                                        if (selectedRow === updated) selectedRow = oldRow
-                                        withContext(Dispatchers.IO) {
-                                            persistLedgerEdit(AppDatabase.getDatabase(context), oldRow, columnIndex, oldValue)
+                                        // Undo: write the old value back, and only revert the screen if that worked.
+                                        val undone = withContext(Dispatchers.IO) {
+                                            runCatching { LedgerEditService.edit(AppDatabase.getDatabase(context), row.memberId, row.groupId, columnIndex, oldValue) }
+                                        }
+                                        val failure = undone.exceptionOrNull()
+                                        if (failure == null) {
+                                            val at = rows.indexOfFirst { it === updated }
+                                            if (at >= 0) rows[at] = oldRow
+                                            if (selectedRow === updated) selectedRow = oldRow
+                                        } else {
+                                            snackbarHostState.showSnackbar(String.format(editFailedText, failure.message.orEmpty()))
                                         }
                                     }
                                 }
@@ -376,17 +392,6 @@ private fun formatLedgerNumber(value: Long): String = NumberFormat.getNumberInst
 private fun ledgerEndDate(start:String?,months:Int):String {
     val parsed=listOf("dd-MMM-yyyy","yyyy-MM-dd","dd-MM-yyyy").firstNotNullOfOrNull { p->runCatching{SimpleDateFormat(p,Locale.ENGLISH).apply{isLenient=false}.parse(start.orEmpty())}.getOrNull() } ?: return "-"
     return SimpleDateFormat("dd-MMM-yyyy",Locale.ENGLISH).format(Calendar.getInstance().apply{time=parsed;add(Calendar.MONTH,months)}.time)
-}
-
-private fun persistLedgerEdit(db: AppDatabase, row: LedgerSheetRow, columnIndex: Int, value: String) {
-    when (columnIndex) {
-        8 -> db.membershipDao().updateTicketNo(row.memberId, row.groupId, value)
-        9 -> db.memberDao().updateOldCode(row.memberId, value)
-        10 -> db.memberDao().updatePhone(row.memberId, value)
-        11 -> db.memberDao().updateName(row.memberId, value)
-        12 -> db.memberDao().updateAddress(row.memberId, value)
-        13 -> db.memberDao().updateCity(row.memberId, value)
-    }
 }
 
 private fun shareLedgerCsv(context: android.content.Context, rows: List<LedgerSheetRow>, sheetColumns: List<SheetColumn>, downloadedToTemplate: String, downloadFailedTemplate: String) {

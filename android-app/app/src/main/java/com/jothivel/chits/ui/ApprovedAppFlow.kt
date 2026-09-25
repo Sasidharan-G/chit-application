@@ -1,4 +1,4 @@
-﻿@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 
 package com.jothivel.chits.ui
 
@@ -124,7 +124,8 @@ private data class DueCustomer(
     val installments: List<String>,
     val agent: String,
     val overdueDays: Int
-    ,val recentContactAt: Long = 0L
+    ,val recentContactAt: Long = 0L,
+    val groupId: String = ""
 )
 
 private data class CollectionLookupData(
@@ -170,10 +171,14 @@ fun ApprovedAppFlow(
         return
     }
 
+    // No install may keep running on the factory PIN 1234: block until the admin chooses their own.
+    var mustChangePin by remember { mutableStateOf(com.jothivel.chits.utils.AppPreferences(roleCheckContext).isUsingDefaultPin()) }
+    if (mustChangePin) com.jothivel.chits.ui.settings.ForcePinChangeDialog { mustChangePin = false }
+
     var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
     var previousDestination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
-    var collectionCustomer by rememberSaveable { mutableStateOf("Thilban") }
-    var collectionChit by rememberSaveable { mutableStateOf("Cits-39") }
+    var collectionCustomer by rememberSaveable { mutableStateOf("") }
+    var collectionChit by rememberSaveable { mutableStateOf("") }
     var ledgerCustomer by remember { mutableStateOf<DueCustomer?>(null) }
     var profileCustomerId by rememberSaveable { mutableStateOf("") }
     var addMemberPresetGroupId by rememberSaveable { mutableStateOf("") }
@@ -268,7 +273,7 @@ fun ApprovedAppFlow(
                 AppDestination.DELIVERY -> FinancialEntryScreen("DELIVERY", onBack = { destination = AppDestination.HOME })
                 AppDestination.TODAY_WORK -> TodayWorkScreen(onBack={destination=AppDestination.HOME}, onProfile={profileCustomerId=it;open(AppDestination.CUSTOMER_PROFILE)}, onCollect={customer,chit->collectionCustomer=customer;collectionChit=chit;open(AppDestination.COLLECT)})
                 AppDestination.CUSTOMER_PROFILE -> CustomerProfileScreen(profileCustomerId, onBack={destination=previousDestination}, onCollect={customer,chit->collectionCustomer=customer;collectionChit=chit;open(AppDestination.COLLECT)})
-                AppDestination.DAILY_CLOSING -> DailyClosingScreen(onBack={destination=AppDestination.HOME})
+                AppDestination.DAILY_CLOSING -> com.jothivel.chits.ui.closing.DailyClosingScreen(onBack = { destination = AppDestination.HOME })
             }
             }
         }
@@ -346,13 +351,13 @@ private fun AgentAppFlow(onLogout: () -> Unit) {
             ) { activeDestination ->
                 when (activeDestination) {
                     AgentDestination.MY_CHITS -> Column(Modifier.fillMaxSize()) {
-                        BrandTopBar("My Chits", action = Icons.Default.Logout, onAction = onLogout)
+                        BrandTopBar(stringResource(R.string.agent_tab_my_chits), action = Icons.Default.Logout, onAction = onLogout)
                         com.jothivel.chits.ui.labour.AgentMyChitsScreen(
                             onOpenGroup = { groupId, label -> selectedGroupId = groupId; selectedGroupLabel = label; open(AgentDestination.MEMBER_LIST) }
                         )
                     }
                     AgentDestination.MEMBER_LIST -> Column(Modifier.fillMaxSize()) {
-                        BrandTopBar(selectedGroupLabel.ifBlank { "Members" }, back = { destination = AgentDestination.MY_CHITS })
+                        BrandTopBar(selectedGroupLabel.ifBlank { stringResource(R.string.agent_members_title) }, back = { destination = AgentDestination.MY_CHITS })
                         com.jothivel.chits.ui.labour.AgentMemberListScreen(
                             groupId = selectedGroupId,
                             onCollect = { memberName, chitLabel -> collectCustomer = memberName; collectChit = chitLabel; open(AgentDestination.COLLECT) }
@@ -364,7 +369,7 @@ private fun AgentAppFlow(onLogout: () -> Unit) {
                         onBack = { destination = previousDestination }
                     )
                     AgentDestination.TODAY_SUMMARY -> Column(Modifier.fillMaxSize()) {
-                        BrandTopBar("Today", action = Icons.Default.Logout, onAction = onLogout)
+                        BrandTopBar(stringResource(R.string.agent_tab_today), action = Icons.Default.Logout, onAction = onLogout)
                         com.jothivel.chits.ui.labour.AgentTodaySummaryScreen()
                     }
                 }
@@ -376,9 +381,9 @@ private fun AgentAppFlow(onLogout: () -> Unit) {
 @Composable
 private fun AgentBottomBar(selected: AgentDestination, onSelect: (AgentDestination) -> Unit) {
     val entries = listOf(
-        Triple(AgentDestination.MY_CHITS, Icons.Default.ListAlt, "My Chits"),
-        Triple(AgentDestination.COLLECT, Icons.Default.AddCircle, "Collect"),
-        Triple(AgentDestination.TODAY_SUMMARY, Icons.Default.Today, "Today")
+        Triple(AgentDestination.MY_CHITS, Icons.Default.ListAlt, stringResource(R.string.agent_tab_my_chits)),
+        Triple(AgentDestination.COLLECT, Icons.Default.AddCircle, stringResource(R.string.agent_tab_collect)),
+        Triple(AgentDestination.TODAY_SUMMARY, Icons.Default.Today, stringResource(R.string.agent_tab_today))
     )
     Box(Modifier.fillMaxWidth().padding(horizontal=10.dp,vertical = 5.dp), contentAlignment = Alignment.Center) {
         Surface(
@@ -483,7 +488,7 @@ private fun ApprovedBottomBar(selected: AppDestination, onSelect: (AppDestinatio
 }
 
 @Composable
-private fun BrandTopBar(
+internal fun BrandTopBar(
     title: String,
     back: (() -> Unit)? = null,
     action: ImageVector? = null,
@@ -1197,36 +1202,66 @@ private fun FinancialEntryScreen(type: String, onBack: () -> Unit) {
     var reverseEntry by remember { mutableStateOf<FinancialTransactionEntity?>(null) }
     var reverseReason by remember { mutableStateOf("") }
     val groups = remember(member, lookup) { val ids=lookup.memberships.filter { it.memberId==member?.id }.mapTo(hashSetOf()) { it.groupId }; lookup.groups.filter { it.id in ids } }
-    val title = if (type=="SETTLEMENT") "Add Settlement" else "Add Delivery"
+    val isDelivery = type == "DELIVERY"
+    val title = stringResource(if (type=="SETTLEMENT") R.string.fin_settlement_title else R.string.fin_delivery_title)
+    val errCustomer = stringResource(R.string.fin_err_customer)
+    val errChit = stringResource(R.string.fin_err_chit)
+    val errAmount = stringResource(R.string.fin_err_amount)
+    val errReference = stringResource(R.string.fin_err_reference)
+    val savedTemplate = stringResource(R.string.fin_saved_toast)
+    val modeLabels = mapOf("Cash" to stringResource(R.string.fin_mode_cash), "UPI" to stringResource(R.string.fin_mode_upi), "Bank" to stringResource(R.string.fin_mode_bank))
+
+    // A Delivery is the prize money for an auction win: show what was won, what has gone out, and
+    // what is left, so the amount typed is checked against something real (the service enforces it too).
+    val selMember = member
+    val selGroup = group
+    val prize by produceState<Triple<Long, Long, Boolean>?>(null, selMember?.id, selGroup?.id, refreshKey, type) {
+        value = if (isDelivery && selMember != null && selGroup != null) withContext(Dispatchers.IO) {
+            val db = AppDatabase.getDatabase(context)
+            Triple(
+                com.jothivel.chits.data.local.ChitAdminService.prizePaise(db, selMember.id, selGroup.id),
+                db.financialTransactionDao().getPostedTotalForMemberGroupTypeSync(selMember.id, selGroup.id, "DELIVERY"),
+                db.installmentDao().getWonByMemberSync(selGroup.id, selMember.id).isNotEmpty()
+            )
+        } else null
+    }
+
     fun save() {
         val paise=(amount.toLongOrNull() ?: 0L)*100
-        error=when { member==null -> "Select a customer"; group==null -> "Select a linked chit"; paise<=0 -> "Enter a valid amount"; mode!="Cash" && reference.isBlank() -> "Reference / UTR is required"; else -> null }
+        error=when { member==null -> errCustomer; group==null -> errChit; paise<=0 -> errAmount; mode!="Cash" && reference.isBlank() -> errReference; else -> null }
         if(error!=null || saving) return
         saving=true
-        scope.launch { val result=withContext(Dispatchers.IO) { runCatching { FinancialService.record(AppDatabase.getDatabase(context), UUID.randomUUID().toString(), type, member!!.id, group!!.id, paise, mode, reference, notes) } }; saving=false; result.onSuccess { amount=""; reference=""; notes=""; error=null; refreshKey++; android.widget.Toast.makeText(context, "$title saved", android.widget.Toast.LENGTH_SHORT).show() }.onFailure { error=it.message } }
+        scope.launch { val result=withContext(Dispatchers.IO) { runCatching { FinancialService.record(AppDatabase.getDatabase(context), UUID.randomUUID().toString(), type, member!!.id, group!!.id, paise, mode, reference, notes) } }; saving=false; result.onSuccess { amount=""; reference=""; notes=""; error=null; refreshKey++; android.widget.Toast.makeText(context, String.format(savedTemplate, title), android.widget.Toast.LENGTH_SHORT).show() }.onFailure { error=it.message } }
     }
     Column(Modifier.fillMaxSize().background(MaroonBackground)) {
         BrandTopBar(title, back=onBack)
         LazyColumn(contentPadding=PaddingValues(12.dp), verticalArrangement=Arrangement.spacedBy(8.dp)) {
-            item { SearchableDropdownField("Customer *", member?.let { "${it.name} • ${it.id}" }.orEmpty(), lookup.members, { "${it.name} ${it.id} ${it.phone}" }, { it.name ?: it.id }, { "${it.id} • ${it.phone.orEmpty()}" }, Icons.Default.Person) { member=it; group=null } }
-            item { SearchableDropdownField("Chit *", group?.let { "${it.registerNo} • ${it.name}" }.orEmpty(), groups, { "${it.registerNo} ${it.name}" }, { it.registerNo ?: it.id }, { it.name ?: "Chit" }, Icons.Default.AccountBalance) { group=it } }
-            item { com.jothivel.chits.ui.components.AmountKeypadField("Amount *", amount, { amount=it; error=null }, Modifier.fillMaxWidth()) }
-            item { Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) { listOf("Cash","UPI","Bank").forEach { value -> FilterChip(mode==value, { mode=value }, { Text(value) }, Modifier.weight(1f)) } } }
-            if(mode!="Cash") item { PremiumInputField(reference, { reference=it }, "Reference / UTR *", Modifier.fillMaxWidth(), leadingIcon=Icons.Default.Tag) }
-            item { PremiumInputField(notes, { notes=it.take(150) }, "Notes", Modifier.fillMaxWidth().height(78.dp), leadingIcon=Icons.Default.Notes, singleLine=false, minLines=2) }
+            item { SearchableDropdownField(stringResource(R.string.fin_customer), member?.let { "${it.name} • ${it.id}" }.orEmpty(), lookup.members, { "${it.name} ${it.id} ${it.phone}" }, { it.name ?: it.id }, { "${it.id} • ${it.phone.orEmpty()}" }, Icons.Default.Person) { member=it; group=null } }
+            item { SearchableDropdownField(stringResource(R.string.fin_chit), group?.let { "${it.registerNo} • ${it.name}" }.orEmpty(), groups, { "${it.registerNo} ${it.name}" }, { it.registerNo ?: it.id }, { it.name ?: "Chit" }, Icons.Default.AccountBalance) { group=it } }
+            if (isDelivery) prize?.let { (won, delivered, isWinner) ->
+                item {
+                    if (!isWinner) Text(stringResource(R.string.fin_delivery_no_winner), color = AccentRed, fontSize = 10.sp)
+                    else Text(stringResource(R.string.fin_delivery_info, money(won / 100), money(delivered / 100), money(maxOf(won - delivered, 0L) / 100)), color = AccentGreen, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+            item { com.jothivel.chits.ui.components.AmountKeypadField(stringResource(R.string.fin_amount), amount, { amount=it; error=null }, Modifier.fillMaxWidth()) }
+            item { Row(horizontalArrangement=Arrangement.spacedBy(6.dp)) { listOf("Cash","UPI","Bank").forEach { value -> FilterChip(mode==value, { mode=value }, { Text(modeLabels.getValue(value)) }, Modifier.weight(1f)) } } }
+            if(mode!="Cash") item { PremiumInputField(reference, { reference=it }, stringResource(R.string.fin_reference), Modifier.fillMaxWidth(), leadingIcon=Icons.Default.Tag) }
+            item { PremiumInputField(notes, { notes=it.take(150) }, stringResource(R.string.fin_notes), Modifier.fillMaxWidth().height(78.dp), leadingIcon=Icons.Default.Notes, singleLine=false, minLines=2) }
             error?.let { item { Text(it, color=AccentRed, fontSize=10.sp) } }
-            item { Button(::save, enabled=!saving, modifier=Modifier.fillMaxWidth().height(46.dp), colors=ButtonDefaults.buttonColors(containerColor=MaroonPrimary)) { Text(if(saving) "Saving…" else "Save ${type.lowercase().replaceFirstChar(Char::uppercase)}") } }
-            item { Text("Recent entries", fontWeight=FontWeight.Bold, fontSize=13.sp, modifier=Modifier.padding(top=6.dp)) }
-            if(entries.isEmpty()) item { EmptyCreatedList("No ${type.lowercase()} entries yet") }
-            items(entries, key={it.id}) { entry -> Surface(shape=RoundedCornerShape(11.dp), color=Color.White, border=BorderStroke(1.dp, DividerGray)) { Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment=Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("${entry.memberId} • ${entry.groupId}", fontSize=11.sp, fontWeight=FontWeight.SemiBold); Text(money(entry.amountPaise/100), fontSize=13.sp, color=if(entry.status=="POSTED") AccentGreen else TextGray, fontWeight=FontWeight.Bold); Text("${entry.mode} • ${if(entry.status=="POSTED") "Posted" else "Reversed"}", fontSize=8.sp, color=TextGray) }; if(entry.status=="POSTED") TextButton({ reverseEntry=entry }) { Text("Reverse", color=AccentRed, fontSize=9.sp) } } } }
+            item { Button(::save, enabled=!saving, modifier=Modifier.fillMaxWidth().height(46.dp), colors=ButtonDefaults.buttonColors(containerColor=MaroonPrimary)) { Text(if(saving) stringResource(R.string.fin_saving) else stringResource(if (type=="SETTLEMENT") R.string.fin_save_settlement else R.string.fin_save_delivery)) } }
+            item { Text(stringResource(R.string.fin_recent), fontWeight=FontWeight.Bold, fontSize=13.sp, modifier=Modifier.padding(top=6.dp)) }
+            if(entries.isEmpty()) item { EmptyCreatedList(stringResource(if (type=="SETTLEMENT") R.string.fin_none_settlement else R.string.fin_none_delivery)) }
+            items(entries, key={it.id}) { entry -> Surface(shape=RoundedCornerShape(11.dp), color=Color.White, border=BorderStroke(1.dp, DividerGray)) { Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment=Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("${entry.memberId} • ${entry.groupId}", fontSize=11.sp, fontWeight=FontWeight.SemiBold); Text(money(entry.amountPaise/100), fontSize=13.sp, color=if(entry.status=="POSTED") AccentGreen else TextGray, fontWeight=FontWeight.Bold); Text("${modeLabels[entry.mode] ?: entry.mode} • ${stringResource(if(entry.status=="POSTED") R.string.fin_posted else R.string.fin_reversed)}", fontSize=8.sp, color=TextGray) }; if(entry.status=="POSTED") TextButton({ reverseEntry=entry }) { Text(stringResource(R.string.fin_reverse), color=AccentRed, fontSize=9.sp) } } } }
         }
     }
     reverseEntry?.let { entry ->
         com.jothivel.chits.ui.components.ConfirmBottomSheet(
             show = true,
             onDismiss = { reverseEntry = null; reverseReason = "" },
-            title = "Reverse entry?",
-            confirmLabel = "Reverse",
+            title = stringResource(R.string.fin_reverse_title),
+            confirmLabel = stringResource(R.string.fin_reverse),
+            cancelLabel = stringResource(R.string.common_cancel),
             isDestructive = true,
             onConfirm = {
                 scope.launch {
@@ -1234,7 +1269,7 @@ private fun FinancialEntryScreen(type: String, onBack: () -> Unit) {
                     result.onSuccess { reverseEntry = null; reverseReason = ""; refreshKey++ }.onFailure { error = it.message }
                 }
             },
-            content = { PremiumInputField(reverseReason, { reverseReason = it.take(100) }, "Reason *", Modifier.fillMaxWidth(), leadingIcon = Icons.Default.Notes) }
+            content = { PremiumInputField(reverseReason, { reverseReason = it.take(100) }, stringResource(R.string.fin_reason), Modifier.fillMaxWidth(), leadingIcon = Icons.Default.Notes) }
         )
     }
 }
@@ -1377,22 +1412,10 @@ private fun CompactNewChitScreen(onBack: () -> Unit, onAddMember: (String) -> Un
                         this.id = id; name = chitName.trim(); registerNo = chitNo.trim(); this.chitValue = valuePaise
                         durationMonths = months; subscriberCount = members; this.branch = branch.trim(); this.startDate = startDate.trim(); status = "ACTIVE"
                     }
-                    val flatInstallmentAmount = valuePaise / months
                     val fixedSchedule = ChitTemplate.forChitValue(chitValue.toInt())?.fixedSchedule?.takeIf { it.size == months }
-                    val installments = (1..months).map { number ->
-                        val row = fixedSchedule?.getOrNull(number - 1)
-                        InstallmentEntity().apply {
-                            this.id = "$id-I$number"; groupId = id; installmentNo = number
-                            // CollectionService always computes the actual due as
-                            // baseAmount - kasaruAmount, so baseAmount here must be the GROSS flat
-                            // rate (row.baseAmount + row.kasaruAmount) not the already-net printed
-                            // figure - otherwise the discount gets subtracted a second time.
-                            baseAmount = row?.let { (it.baseAmount + it.kasaruAmount) * 100 } ?: flatInstallmentAmount
-                            kasaruAmount = row?.let { it.kasaruAmount * 100 } ?: 0
-                            payoutAmount = row?.takeIf { it.payoutAmount > 0 }?.let { it.payoutAmount * 100 }
-                            auctionDate = null; status = "UPCOMING"; winningMemberId = null
-                        }
-                    }
+                    // Flat plans roll the paise remainder into the last installment, so the schedule
+                    // always sums to exactly the chit value.
+                    val installments = com.jothivel.chits.data.local.ChitAdminService.buildInstallments(id, valuePaise, months, fixedSchedule)
                     db.runInTransaction {
                         db.groupDao().insertGroup(group)
                         db.installmentDao().insertAll(installments)
@@ -1492,6 +1515,9 @@ private fun CompactNewChitScreen(onBack: () -> Unit, onAddMember: (String) -> Un
     }
 }
 
+/** Suggests a "C-12345" style code. If it is already used by a different customer, saving says so. */
+private fun newCustomerCode(): String = "C-${(10000..99999).random()}"
+
 @Composable
 private fun CompactAddMemberScreen(onBack: () -> Unit, initialGroupId: String = "") {
     val context = LocalContext.current
@@ -1510,7 +1536,7 @@ private fun CompactAddMemberScreen(onBack: () -> Unit, initialGroupId: String = 
     }
     var selectedGroup by remember { mutableStateOf<ChitGroupEntity?>(null) }
     var menuOpen by remember { mutableStateOf(false) }
-    var customerCode by remember { mutableStateOf("C-${System.currentTimeMillis().toString().takeLast(5)}") }
+    var customerCode by remember { mutableStateOf(newCustomerCode()) }
     var name by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var ticket by remember { mutableStateOf("") }
@@ -1519,6 +1545,11 @@ private fun CompactAddMemberScreen(onBack: () -> Unit, initialGroupId: String = 
     var dueDate by remember { mutableStateOf("") }
     var address by remember { mutableStateOf("") }
     var city by remember { mutableStateOf("") }
+    var ticketNo by remember { mutableStateOf("") }
+    var aadhaarLast4 by remember { mutableStateOf("") }
+    var nomineeName by remember { mutableStateOf("") }
+    var nomineePhone by remember { mutableStateOf("") }
+    var nomineeRelation by remember { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -1564,6 +1595,8 @@ private fun CompactAddMemberScreen(onBack: () -> Unit, initialGroupId: String = 
     val chitFullTemplate = stringResource(R.string.addmember_error_chit_full)
     val mobileTakenTemplate = stringResource(R.string.addmember_error_mobile_taken)
     val alreadyAddedText = stringResource(R.string.addmember_error_already_added)
+    val rejoinedToast = stringResource(R.string.addmember_rejoined_toast)
+    val existingCustomerToast = stringResource(R.string.addmember_existing_toast)
 
     fun save() {
         val dateFormat = SimpleDateFormat("dd-MMM-yyyy", Locale.ENGLISH).apply { isLenient = false }
@@ -1584,48 +1617,33 @@ private fun CompactAddMemberScreen(onBack: () -> Unit, initialGroupId: String = 
         saving = true
         scope.launch {
             val result = withContext(Dispatchers.IO) { runCatching {
-                val db = AppDatabase.getDatabase(context)
-                val existingMember = db.memberDao().getAllMembersSync().firstOrNull { it.id.equals(customerCode.trim(), true) }
-                val samePhone = db.memberDao().getAllMembersSync().firstOrNull { it.phone == phone && !it.id.equals(customerCode.trim(), true) }
-                if (samePhone != null) throw IllegalArgumentException(String.format(mobileTakenTemplate, samePhone.name, samePhone.id))
-                if (db.membershipDao().countActiveForGroupSync(selectedGroup!!.id) >= selectedGroup!!.subscriberCount) throw IllegalArgumentException(String.format(chitFullTemplate, selectedGroup!!.subscriberCount))
-                val member = existingMember ?: MemberEntity().apply {
-                    id = customerCode.trim(); this.name = name.trim(); this.phone = phone; photoUrl = null
-                    nomineeName = null; nomineePhone = null; role = "MEMBER"; isActive = true; dob = null; gender = null
-                    addressLine = address.trim(); this.city = city.trim(); state = "Tamil Nadu"; pincode = null
-                    aadhaarNoEncrypted = null; panNo = null; aadhaarDocumentPath = null; panDocumentPath = null
-                    selectedChitId = selectedGroup!!.id; ticketNo = null; installmentAmount = installment.trim()
-                    this.joiningDate = joiningDate.trim(); this.dueDate = dueDate.trim(); nomineeRelationship = null
-                }
-                if (db.membershipDao().getSync(member.id, selectedGroup!!.id) != null) throw IllegalArgumentException(alreadyAddedText)
-                val joiningDateValue = joiningDate.trim()
-                val dueDateValue = dueDate.trim()
-                val membership = ChitMembershipEntity().apply {
-                    id = "${member.id}:${selectedGroup!!.id}"
-                    memberId = member.id
-                    groupId = selectedGroup!!.id
-                    ticketNo = null
-                    installmentAmountPaise = if (hasFixedSchedule) 0L else installmentValue * 100
-                    joiningDate = joiningDateValue
-                    dueDate = dueDateValue
-                    isActive = true
-                }
-                db.runInTransaction {
-                    if (existingMember == null) {
-                        db.memberDao().insertMember(member)
-                    } else {
-                        db.memberDao().updateAddress(member.id, member.addressLine)
-                        db.memberDao().updateCity(member.id, member.city)
-                    }
-                    db.membershipDao().insert(membership)
-                    db.activityLogDao().insertLog(ActivityLogEntity(actionType = "MEMBER_ADDED", title = "Member Added", description = "${member.name} joined ${selectedGroup!!.registerNo}"))
-                }
+                // Identity rules (existing code / mobile / rejoin / ticket / KYC) live in the service.
+                com.jothivel.chits.data.local.MemberEnrollmentService.addMemberToChit(
+                    AppDatabase.getDatabase(context),
+                    selectedGroup!!.id,
+                    com.jothivel.chits.data.local.NewMemberInput(
+                        customerCode = customerCode, name = name, phone = phone, address = address, city = city,
+                        nomineeName = nomineeName, nomineePhone = nomineePhone, nomineeRelationship = nomineeRelation,
+                        aadhaarLast4 = aadhaarLast4, ticketNo = ticketNo,
+                        installmentPaise = installmentValue * 100,
+                        joiningDate = joiningDate, dueDate = dueDate
+                    )
+                )
             } }
             saving = false
-            result.onSuccess {
-                android.widget.Toast.makeText(context, addedToast, android.widget.Toast.LENGTH_SHORT).show()
-                customerCode = "C-${System.currentTimeMillis().toString().takeLast(5)}"
+            result.onSuccess { added ->
+                android.widget.Toast.makeText(
+                    context,
+                    when {
+                        added.rejoined -> rejoinedToast
+                        added.reusedExistingCustomer -> existingCustomerToast
+                        else -> addedToast
+                    },
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+                customerCode = newCustomerCode()
                 name = ""; phone = ""; address = ""; city = ""; error = null
+                ticketNo = ""; aadhaarLast4 = ""; nomineeName = ""; nomineePhone = ""; nomineeRelation = ""
                 selectedGroup = null; installment = ""; dueDate = ""
                 refreshKey++
             }
@@ -1733,6 +1751,15 @@ private fun CompactAddMemberScreen(onBack: () -> Unit, initialGroupId: String = 
             } }
             item { CompactFormField(stringResource(R.string.addmember_address), address, { address = it }, Modifier.fillMaxWidth()) }
             item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CompactFormField(stringResource(R.string.addmember_ticket), ticketNo, { ticketNo = it.filter(Char::isDigit).take(3) }, Modifier.weight(1f), KeyboardType.Number)
+                CompactFormField(stringResource(R.string.addmember_aadhaar_last4), aadhaarLast4, { aadhaarLast4 = it.filter(Char::isDigit).take(4) }, Modifier.weight(1f), KeyboardType.Number)
+            } }
+            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CompactFormField(stringResource(R.string.addmember_nominee_name), nomineeName, { nomineeName = it }, Modifier.weight(1.25f))
+                CompactFormField(stringResource(R.string.addmember_nominee_phone), nomineePhone, { nomineePhone = it.filter(Char::isDigit).take(10) }, Modifier.weight(1f), KeyboardType.Phone)
+            } }
+            item { CompactFormField(stringResource(R.string.addmember_nominee_relation), nomineeRelation, { nomineeRelation = it }, Modifier.fillMaxWidth()) }
+            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CompactDateField(stringResource(R.string.addmember_joining_date), joiningDate, { joiningDate = it; selectedGroup?.let(::selectGroup) }, Modifier.weight(1f))
                 CompactDateField(stringResource(R.string.addmember_due_date), dueDate, { dueDate = it }, Modifier.weight(1f))
             } }
@@ -1806,7 +1833,7 @@ private fun CompactGroupCard(
                 )
             }
             // Status badge
-            Text(
+            if (group.status == "COMPLETED") com.jothivel.chits.ui.groups.ChitClosedTag() else Text(
                 group.status ?: "ACTIVE",
                 fontSize = 8.sp,
                 color = AccentGreen,
@@ -1815,8 +1842,8 @@ private fun CompactGroupCard(
                     .padding(horizontal = 6.dp, vertical = 3.dp)
             )
             Spacer(Modifier.width(6.dp))
-            // Plus icon – only when chit has vacant slots
-            if (!isFull) {
+            // Plus icon – only when chit has vacant slots (and is still open)
+            if (!isFull && group.status != "COMPLETED") {
                 Box(
                     modifier = Modifier
                         .size(28.dp)
@@ -1868,17 +1895,22 @@ private fun ChitGroupDetailScreen(groupId: String, onBack: () -> Unit, onAddMemb
     val progress by produceState(initialValue = GroupProgress(), g, refreshKey) {
         value = withContext(Dispatchers.IO) {
             val db = AppDatabase.getDatabase(context)
-            computeGroupProgress(db, g, db.paymentDao().getAllPaymentsSync().filter { it.groupId == g.id })
+            computeGroupProgress(db, g, db.paymentDao().getPaymentsForGroupSync(g.id))
         }
     }
     val memberships by produceState(initialValue = emptyList<ChitMembershipEntity>(), groupId, refreshKey) {
         value = withContext(Dispatchers.IO) { AppDatabase.getDatabase(context).membershipDao().getActiveForGroupSync(groupId) }
     }
-    val memberNames by produceState(initialValue = emptyMap<String, String>(), memberships) {
-        if (memberships.isNotEmpty()) {
+    // Members who left the chit (shown with a Rejoin button).
+    val leftMemberships by produceState(initialValue = emptyList<ChitMembershipEntity>(), groupId, refreshKey) {
+        value = withContext(Dispatchers.IO) { AppDatabase.getDatabase(context).membershipDao().getAllForGroupSync(groupId).filter { !it.isActive } }
+    }
+    val memberNames by produceState(initialValue = emptyMap<String, String>(), memberships, leftMemberships) {
+        if (memberships.isNotEmpty() || leftMemberships.isNotEmpty()) {
             value = withContext(Dispatchers.IO) {
-                val db = AppDatabase.getDatabase(context)
-                memberships.associate { ms -> ms.memberId to (db.memberDao().getAllMembersSync().firstOrNull { it.id == ms.memberId }?.name ?: ms.memberId) }
+                // One query for all names (this used to load the whole members table once per row).
+                val byId = AppDatabase.getDatabase(context).memberDao().getAllMembersSync().associateBy { it.id }
+                (memberships + leftMemberships).associate { ms -> ms.memberId to (byId[ms.memberId]?.name ?: ms.memberId) }
             }
         }
     }
@@ -1892,12 +1924,17 @@ private fun ChitGroupDetailScreen(groupId: String, onBack: () -> Unit, onAddMemb
         if (memberships.isNotEmpty()) {
             value = withContext(Dispatchers.IO) {
                 val db = AppDatabase.getDatabase(context)
+                // Bulk-loaded (group, installments, payments read once) - same numbers as the
+                // per-member calculation, without four queries per row.
+                val breakdowns = com.jothivel.chits.data.local.DueLoader.loadForGroup(db, groupId)
+                val paymentsByMember = db.paymentDao().getPaymentsForGroupSync(groupId).groupBy { it.memberId }
                 memberships.associate { ms ->
-                    val breakdown = CollectionService.calculateDueBreakdown(db, ms.memberId, groupId)
+                    val breakdown = breakdowns[ms.memberId]
                     val status = when {
-                        breakdown.pendingInstallments.isEmpty() -> MemberDueStatus.PAID_UP
+                        breakdown == null || breakdown.pendingInstallments.isEmpty() -> MemberDueStatus.PAID_UP
                         else -> {
-                            val allocated = db.paymentDao().getPaymentsForInstallmentSync(ms.memberId, groupId, breakdown.pendingInstallments.first().toString()).sumOf { it.amountPaid }
+                            val first = breakdown.pendingInstallments.first().toString()
+                            val allocated = paymentsByMember[ms.memberId].orEmpty().filter { it.installmentId == first }.sumOf { it.amountPaid }
                             if (allocated > 0) MemberDueStatus.PARTIAL else MemberDueStatus.DUE
                         }
                     }
@@ -1909,6 +1946,13 @@ private fun ChitGroupDetailScreen(groupId: String, onBack: () -> Unit, onAddMemb
     val hasFixedSchedule = remember(g) { ChitTemplate.forChitValue(g.chitValue / 100)?.fixedSchedule?.size == g.durationMonths }
     val isFull = progress.members >= g.subscriberCount
     var monthlyViewMember by remember { mutableStateOf<ChitMembershipEntity?>(null) }
+    var showEdit by remember { mutableStateOf(false) }
+    var showClose by remember { mutableStateOf(false) }
+    var removeTarget by remember { mutableStateOf<ChitMembershipEntity?>(null) }
+    val pendingMembers by produceState(initialValue = 0, groupId, refreshKey) {
+        value = withContext(Dispatchers.IO) { com.jothivel.chits.data.local.ChitAdminService.membersWithPendingDues(AppDatabase.getDatabase(context), groupId) }
+    }
+    val chitClosed = g.status == "COMPLETED"
 
     Column(Modifier.fillMaxSize().background(MaroonBackground)) {
         BrandTopBar("${g.registerNo} • ${g.name}", back = onBack)
@@ -1968,9 +2012,13 @@ private fun ChitGroupDetailScreen(groupId: String, onBack: () -> Unit, onAddMemb
                 }
             }
             item {
+                com.jothivel.chits.ui.groups.ChitGroupActionsRow(g, onEdit = { showEdit = true }, onCloseOrReopen = { showClose = true })
+            }
+            item {
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.chits_members_header, progress.members, g.subscriberCount), fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    if (!isFull) {
+                    if (chitClosed) com.jothivel.chits.ui.groups.ChitClosedTag()
+                    if (!isFull && !chitClosed) {
                         TextButton(onClick = { onAddMember(g.id) }) {
                             Icon(Icons.Default.PersonAdd, null, tint = MaroonPrimary, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(4.dp))
@@ -2028,11 +2076,28 @@ private fun ChitGroupDetailScreen(groupId: String, onBack: () -> Unit, onAddMemb
                             ) {
                                 Icon(Icons.Default.CalendarMonth, contentDescription = stringResource(R.string.chits_monthly_view_icon), tint = MaroonPrimary, modifier = Modifier.size(16.dp))
                             }
+                            if (!chitClosed) {
+                                Spacer(Modifier.width(4.dp))
+                                Box(
+                                    Modifier.size(26.dp).clip(CircleShape).clickable { removeTarget = ms },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.PersonRemove, contentDescription = stringResource(R.string.group_remove_icon), tint = AccentRed, modifier = Modifier.size(16.dp))
+                                }
+                            }
                         }
                     }
                 }
             }
+            item { com.jothivel.chits.ui.groups.LeftMembersCard(leftMemberships, memberNames, g.id) { refreshKey++ } }
+            item { com.jothivel.chits.ui.groups.WinnersCard(g, installments, memberships, memberNames) { refreshKey++ } }
         }
+    }
+
+    if (showEdit) com.jothivel.chits.ui.groups.EditChitSheet(g, onDismiss = { showEdit = false }, onSaved = { showEdit = false; refreshKey++ })
+    if (showClose) com.jothivel.chits.ui.groups.CloseChitSheet(g, pendingMembers, onDismiss = { showClose = false }, onDone = { showClose = false; refreshKey++ })
+    removeTarget?.let { ms ->
+        com.jothivel.chits.ui.groups.RemoveMemberSheet(memberNames[ms.memberId] ?: ms.memberId, ms.memberId, g.id, onDismiss = { removeTarget = null }, onDone = { removeTarget = null; refreshKey++ })
     }
 
     monthlyViewMember?.let { ms ->
@@ -2274,28 +2339,17 @@ private fun PendingScreen(
     val unnamedText = stringResource(R.string.pending_unnamed)
     val notPaidText = stringResource(R.string.pending_not_paid)
     val unassignedText = stringResource(R.string.pending_unassigned)
-    val roomDues by produceState(initialValue = emptyList<DueCustomer>(), context) {
+    val baseDues by produceState(initialValue = emptyList<DueCustomer>(), context) {
         value = withContext(Dispatchers.IO) {
             val db = AppDatabase.getDatabase(context)
-            val membersById = db.memberDao().getAllMembersSync().associateBy { it.id }
-            val groupsById = db.groupDao().getAllGroupsSync().associateBy { it.id }
-            val contacts = db.activityLogDao().getAllSync().filter { it.actionType=="CUSTOMER_CONTACTED" }.groupBy { it.description.substringBefore('|') }
-            // Which labour (field agent) each chit is assigned to, so admin can see at a
-            // glance who is responsible for collecting a given pending dues row.
-            val agentNameByGroupId = runCatching { com.jothivel.chits.data.firebase.AgentAuthRepository.listAgents(context) }
-                .getOrDefault(emptyList())
-                .filter { it.isActive }
-                .fold(HashMap<String, String>()) { acc, agent ->
-                    agent.assignedGroups.forEach { groupId -> acc[groupId] = acc[groupId]?.let { "$it, ${agent.name}" } ?: agent.name }
-                    acc
-                }
-            db.membershipDao().getAllActiveSync().mapNotNull { membership ->
-                val member = membersById[membership.memberId] ?: return@mapNotNull null
-                val group = groupsById[membership.groupId] ?: return@mapNotNull null
-                val breakdown = CollectionService.calculateDueBreakdown(db, member.id, group.id)
-                val paid = breakdown.paidPaise / 100
+            // Only the reminder entries are read (the log table grows without bound), and every
+            // group / installment / payment is loaded once for all customers.
+            val contacts = db.activityLogDao().getByTypeSync("CUSTOMER_CONTACTED").groupBy { it.description.substringBefore('|') }
+            com.jothivel.chits.data.local.DueLoader.loadAll(db).mapNotNull { row ->
+                val member = row.member
+                val group = row.group
+                val breakdown = row.breakdown
                 val pending = breakdown.pendingPaise / 100
-                val payable = breakdown.payablePaise / 100
                 if (pending == 0L) null else {
                     DueCustomer(
                         name = member.name ?: unnamedText,
@@ -2305,19 +2359,27 @@ private fun PendingScreen(
                         filterArea = member.city?.trim()?.takeIf { it.isNotBlank() } ?: member.addressLine?.trim().orEmpty(),
                         chit = listOfNotNull(group.registerNo?.takeIf { it.isNotBlank() }, group.name?.takeIf { it.isNotBlank() }).joinToString(" - "),
                         chitValue = group.chitValue.toLong() / 100,
-                        payable = payable,
-                        paid = paid,
+                        payable = breakdown.payablePaise / 100,
+                        paid = breakdown.paidPaise / 100,
                         pending = pending,
                         lastPaid = breakdown.lastPaidAt?.let { SimpleDateFormat("dd-MMM-yy", Locale.ENGLISH).format(Date(it)) } ?: notPaidText,
                         dueDate = breakdown.earliestDueDate,
                         installments = breakdown.pendingInstallments.map { "$it TH" },
-                        agent = agentNameByGroupId[group.id] ?: unassignedText,
+                        agent = unassignedText,
                         overdueDays = breakdown.overdueDays,
-                        recentContactAt = contacts[member.id]?.maxOfOrNull { it.timestamp } ?: 0L
+                        recentContactAt = contacts[member.id]?.maxOfOrNull { it.timestamp } ?: 0L,
+                        groupId = group.id
                     )
                 }
             }
         }
+    }
+    // Which labour a chit is assigned to is a cloud lookup. It used to run inside the list load, so
+    // an offline or slow connection held the whole Pending screen back; now the list appears at once
+    // and the names fill in when (if) they arrive.
+    val agentNames by produceState(initialValue = emptyMap<String, String>(), context) { value = loadAgentNamesByGroup(context) }
+    val roomDues = remember(baseDues, agentNames) {
+        if (agentNames.isEmpty()) baseDues else baseDues.map { due -> agentNames[due.groupId]?.let { due.copy(agent = it) } ?: due }
     }
     val areaOptions = remember(roomDues) { roomDues.map { it.filterArea }.filter { it.isNotBlank() }.distinct().sorted() }
     val chitOptions = remember(roomDues) { roomDues.map { it.chit }.filter { it.isNotBlank() }.distinct().sorted() }
@@ -2579,24 +2641,37 @@ private fun recordCustomerContact(context: android.content.Context, due: DueCust
     }
 }
 
-private suspend fun loadOperationalDues(db: AppDatabase, context: android.content.Context, unassignedText: String = "Unassigned"): List<DueCustomer> {
-    val members=db.memberDao().getAllMembersSync().associateBy { it.id }
-    val groups=db.groupDao().getAllGroupsSync().associateBy { it.id }
-    val contacts=db.activityLogDao().getAllSync().filter { it.actionType=="CUSTOMER_CONTACTED" }.groupBy { it.description.substringBefore('|') }
-    val agentNameByGroupId = runCatching { com.jothivel.chits.data.firebase.AgentAuthRepository.listAgents(context) }
-        .getOrDefault(emptyList())
-        .filter { it.isActive }
-        .fold(HashMap<String, String>()) { acc, agent ->
-            agent.assignedGroups.forEach { groupId -> acc[groupId] = acc[groupId]?.let { "$it, ${agent.name}" } ?: agent.name }
-            acc
-        }
-    return db.membershipDao().getAllActiveSync().mapNotNull { link ->
-        val member=members[link.memberId] ?: return@mapNotNull null
-        val group=groups[link.groupId] ?: return@mapNotNull null
-        val due=CollectionService.calculateDueBreakdown(db,member.id,group.id)
-        if(due.pendingPaise<=0) return@mapNotNull null
-        DueCustomer(member.name?:"Unnamed",member.id,member.phone.orEmpty(),listOfNotNull(member.addressLine,member.city).joinToString(", "),member.city.orEmpty(),group.registerNo?:group.id,group.chitValue.toLong()/100,due.payablePaise/100,due.paidPaise/100,due.pendingPaise/100,due.lastPaidAt?.let{SimpleDateFormat("dd-MMM-yy",Locale.ENGLISH).format(Date(it))}?:"Not paid",due.earliestDueDate,due.pendingInstallments.map{"$it TH"},agentNameByGroupId[group.id]?:unassignedText,due.overdueDays,contacts[member.id]?.maxOfOrNull{it.timestamp}?:0L)
-    }.sortedWith(compareByDescending<DueCustomer>{it.overdueDays>=90}.thenByDescending{it.overdueDays}.thenByDescending{it.pending}.thenBy{if(it.recentContactAt==0L)0 else 1})
+/** Chit id -> "Agent A, Agent B" for active labour accounts; empty if the cloud is unreachable within a few seconds. */
+private suspend fun loadAgentNamesByGroup(context: android.content.Context): Map<String, String> = withContext(Dispatchers.IO) {
+    kotlinx.coroutines.withTimeoutOrNull(6_000L) {
+        runCatching { com.jothivel.chits.data.firebase.AgentAuthRepository.listAgents(context) }
+            .getOrDefault(emptyList())
+            .filter { it.isActive }
+            .fold(HashMap<String, String>()) { acc, agent ->
+                agent.assignedGroups.forEach { groupId -> acc[groupId] = acc[groupId]?.let { "$it, ${agent.name}" } ?: agent.name }
+                acc
+            }
+    } ?: emptyMap()
+}
+
+private fun loadOperationalDues(db: AppDatabase, unassignedText: String = "Unassigned"): List<DueCustomer> {
+    val contacts = db.activityLogDao().getByTypeSync("CUSTOMER_CONTACTED").groupBy { it.description.substringBefore('|') }
+    return com.jothivel.chits.data.local.DueLoader.loadAll(db).mapNotNull { row ->
+        val member = row.member
+        val group = row.group
+        val due = row.breakdown
+        if (due.pendingPaise <= 0) return@mapNotNull null
+        DueCustomer(
+            name = member.name ?: "Unnamed", code = member.id, phone = member.phone.orEmpty(),
+            area = listOfNotNull(member.addressLine, member.city).joinToString(", "), filterArea = member.city.orEmpty(),
+            chit = group.registerNo ?: group.id, chitValue = group.chitValue.toLong() / 100,
+            payable = due.payablePaise / 100, paid = due.paidPaise / 100, pending = due.pendingPaise / 100,
+            lastPaid = due.lastPaidAt?.let { SimpleDateFormat("dd-MMM-yy", Locale.ENGLISH).format(Date(it)) } ?: "Not paid",
+            dueDate = due.earliestDueDate, installments = due.pendingInstallments.map { "$it TH" },
+            agent = unassignedText, overdueDays = due.overdueDays,
+            recentContactAt = contacts[member.id]?.maxOfOrNull { it.timestamp } ?: 0L, groupId = group.id
+        )
+    }.sortedWith(compareByDescending<DueCustomer> { it.overdueDays >= 90 }.thenByDescending { it.overdueDays }.thenByDescending { it.pending }.thenBy { if (it.recentContactAt == 0L) 0 else 1 })
 }
 
 private data class TodayCompletedRow(val id: String, val memberId: String, val memberName: String, val chitLabel: String, val amountPaise: Long)
@@ -2624,14 +2699,15 @@ private fun TodayWorkScreen(onBack:()->Unit,onProfile:(String)->Unit,onCollect:(
     val snapshot by produceState(initialValue=TodayWorkSnapshot(),context) { value=withContext(Dispatchers.IO){
         val db=AppDatabase.getDatabase(context)
         val today=CollectionService.todayKey()
-        val financial=db.financialTransactionDao().getAllSync().filter{it.status=="POSTED" && SimpleDateFormat("yyyy-MM-dd",Locale.US).format(Date(it.occurredAt))==today}
+        val dayStart=SimpleDateFormat("yyyy-MM-dd",Locale.US).parse(today)!!.time
+        val financial=db.financialTransactionDao().getPostedForTimeRangeSync(dayStart, dayStart+86_400_000L)
         val members=db.memberDao().getAllMembersSync().associateBy{it.id}
         val groups=db.groupDao().getAllGroupsSync().associateBy{it.id}
-        val completedRows=db.collectionReceiptDao().getRecentSync(Int.MAX_VALUE).filter{SimpleDateFormat("yyyy-MM-dd",Locale.US).format(Date(it.paidAt))==today}.map{r->
+        val completedRows=db.collectionReceiptDao().getSavedForTimeRangeSync(dayStart, dayStart+86_400_000L).map{r->
             val group=groups[r.groupId]
             TodayCompletedRow(r.id, r.memberId, members[r.memberId]?.name ?: r.memberId, group?.registerNo ?: group?.name ?: r.groupId, r.amountPaidPaise)
         }
-        TodayWorkSnapshot(loadOperationalDues(db,context,unassignedText),completedRows,financial.filter{it.type=="SETTLEMENT"}.sumOf{it.amountPaise}/100,financial.filter{it.type=="DELIVERY"}.sumOf{it.amountPaise}/100)
+        TodayWorkSnapshot(loadOperationalDues(db,unassignedText),completedRows,financial.filter{it.type=="SETTLEMENT"}.sumOf{it.amountPaise}/100,financial.filter{it.type=="DELIVERY"}.sumOf{it.amountPaise}/100)
     } }
     val todayLabel=SimpleDateFormat("dd-MMM-yy",Locale.ENGLISH).format(Date())
     val dueToday=snapshot.dues.filter{it.dueDate.equals(todayLabel,true)}
@@ -2787,9 +2863,6 @@ private fun PassbookPage(customerName: String, rows: List<PaymentEntity>, pageNo
     }
 }
 
-@Composable
-private fun DailyClosingScreen(onBack:()->Unit){val context=LocalContext.current;val today=CollectionService.todayKey();val snapshot by produceState(initialValue=emptyMap<String,Long>(),context){value=withContext(Dispatchers.IO){val db=AppDatabase.getDatabase(context);val receipts=db.collectionReceiptDao().getRecentSync(Int.MAX_VALUE).filter{SimpleDateFormat("yyyy-MM-dd",Locale.US).format(Date(it.paidAt))==today&&it.status=="SAVED"};val finance=db.financialTransactionDao().getAllSync().filter{it.status=="POSTED"&&SimpleDateFormat("yyyy-MM-dd",Locale.US).format(Date(it.occurredAt))==today};val dues=loadOperationalDues(db,context).filter{it.dueDate.equals(SimpleDateFormat("dd-MMM-yy",Locale.ENGLISH).format(Date()),true)}.sumOf{it.pending};mapOf("Cash" to receipts.filter{it.mode=="Cash"}.sumOf{it.amountPaidPaise}/100,"UPI" to receipts.filter{it.mode=="UPI"}.sumOf{it.amountPaidPaise}/100,"Bank" to receipts.filter{it.mode=="Bank"}.sumOf{it.amountPaidPaise}/100,"Settlement" to finance.filter{it.type=="SETTLEMENT"}.sumOf{it.amountPaise}/100,"Delivery" to finance.filter{it.type=="DELIVERY"}.sumOf{it.amountPaise}/100,"Due" to dues)}};val received=(snapshot["Cash"]?:0)+(snapshot["UPI"]?:0)+(snapshot["Bank"]?:0);val expected=received+(snapshot["Due"]?:0);val difference=received-expected;fun share(){val text="Jothi Vel Chits - Daily Closing ($today)\nCash: ${money(snapshot["Cash"]?:0)}\nUPI: ${money(snapshot["UPI"]?:0)}\nBank: ${money(snapshot["Bank"]?:0)}\nSettlement: ${money(snapshot["Settlement"]?:0)}\nDelivery: ${money(snapshot["Delivery"]?:0)}\nExpected: ${money(expected)}\nReceived: ${money(received)}\nDifference: ${money(difference)}";context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply{type="text/plain";putExtra(Intent.EXTRA_TEXT,text)},"Share closing summary"))};Column(Modifier.fillMaxSize().background(MaroonBackground)){BrandTopBar("Daily Closing",back=onBack,action=Icons.Default.Share,onAction=::share);LazyColumn(contentPadding=PaddingValues(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){item{Text(SimpleDateFormat("EEEE, dd MMM yyyy",Locale.ENGLISH).format(Date()),fontSize=11.sp,color=TextGray)};listOf("Cash" to AccentGreen,"UPI" to Color(0xFF285A9B),"Bank" to MaroonPrimary,"Settlement" to Color(0xFF285A9B),"Delivery" to AccentGreen).forEach{(key,color)->item{ClosingRow(key,snapshot[key]?:0,color)}};item{Divider()};item{ClosingRow("Expected",expected,Color.Black)};item{ClosingRow("Received",received,AccentGreen)};item{ClosingRow("Difference",difference,if(difference<0)AccentRed else AccentGreen)};item{Button(::share,Modifier.fillMaxWidth(),colors=ButtonDefaults.buttonColors(containerColor=MaroonPrimary)){Icon(Icons.Default.Share,null);Spacer(Modifier.width(6.dp));Text("Share Closing Summary")}}}}}
-@Composable private fun ClosingRow(label:String,value:Long,color:Color)=Surface(shape=RoundedCornerShape(13.dp),color=Color.White,border=BorderStroke(1.dp,DividerGray)){Row(Modifier.fillMaxWidth().padding(horizontal=13.dp,vertical=11.dp),horizontalArrangement=Arrangement.SpaceBetween){Text(label,fontSize=10.sp,color=TextGray);Text(money(value),fontSize=13.sp,fontWeight=FontWeight.Bold,color=color)}}
 
 /**
  * The admin PIN had no in-app way to be changed off its "1234" default before this - the setup
@@ -2805,9 +2878,12 @@ private fun ChangePinSection() {
     var newPin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val changedToast = stringResource(R.string.settings_change_pin_done)
 
     fun close() {
+        if (saving) return
         showDialog = false; currentPin = ""; newPin = ""; confirmPin = ""; error = null
     }
 
@@ -2862,22 +2938,38 @@ private fun ChangePinSection() {
             confirmButton = {
                 Button(
                     onClick = {
-                        val prefs = com.jothivel.chits.utils.AppPreferences(context)
+                        if (saving) return@Button
                         when {
                             currentPin.length != 4 -> error = context.getString(R.string.settings_change_pin_error_current)
                             newPin.length != 4 -> error = context.getString(R.string.settings_change_pin_error_new)
                             newPin != confirmPin -> error = context.getString(R.string.settings_change_pin_error_mismatch)
-                            !prefs.changePin(currentPin, newPin) -> error = context.getString(R.string.settings_change_pin_error_wrong)
+                            com.jothivel.chits.ui.settings.isWeakPin(newPin) -> error = context.getString(R.string.force_pin_weak)
                             else -> {
-                                android.widget.Toast.makeText(context, changedToast, android.widget.Toast.LENGTH_SHORT).show()
-                                close()
+                                saving = true
+                                scope.launch {
+                                    val result = withContext(Dispatchers.IO) { com.jothivel.chits.data.firebase.AdminPin.changePin(context, currentPin, newPin) }
+                                    saving = false
+                                    when (result) {
+                                        com.jothivel.chits.data.firebase.AdminPin.ChangeResult.Changed -> {
+                                            android.widget.Toast.makeText(context, changedToast, android.widget.Toast.LENGTH_SHORT).show()
+                                            close()
+                                        }
+                                        com.jothivel.chits.data.firebase.AdminPin.ChangeResult.WrongCurrentPin -> error = context.getString(R.string.settings_change_pin_error_wrong)
+                                        com.jothivel.chits.data.firebase.AdminPin.ChangeResult.InvalidNewPin -> error = context.getString(R.string.settings_change_pin_error_new)
+                                        is com.jothivel.chits.data.firebase.AdminPin.ChangeResult.CloudFailed -> error = context.getString(R.string.settings_change_pin_cloud_failed, result.message)
+                                    }
+                                }
                             }
                         }
                     },
+                    enabled = !saving,
                     colors = ButtonDefaults.buttonColors(containerColor = MaroonPrimary)
-                ) { Text(stringResource(R.string.settings_change_pin_save)) }
+                ) {
+                    if (saving) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                    else Text(stringResource(R.string.settings_change_pin_save))
+                }
             },
-            dismissButton = { TextButton(onClick = ::close) { Text(stringResource(R.string.settings_delete_all_members_cancel)) } }
+            dismissButton = { TextButton(onClick = ::close, enabled = !saving) { Text(stringResource(R.string.common_cancel)) } }
         )
     }
 }
@@ -2889,11 +2981,10 @@ private fun SettingsScreenApproved(onBack: () -> Unit, onBackup: () -> Unit, onR
     Column(Modifier.fillMaxSize()) { BrandTopBar(stringResource(R.string.settings_title), back = onBack); LazyColumn(contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item { LabourHighlightCard(onLabour) }
         item { ChangePinSection() }
+        item { com.jothivel.chits.ui.settings.CloudAccountSection() }
         item { CloudSyncSection() }
         item { LanguageToggleRow() }
-        item{Text(backupText,fontSize=10.sp,color=if(last==0L)AccentRed else AccentGreen,modifier=Modifier.padding(horizontal=5.dp,vertical=3.dp))}; item { MoreRow(Icons.Default.Backup, stringResource(R.string.settings_backup_database), onBackup) }; item { MoreRow(Icons.Default.Restore, stringResource(R.string.settings_restore_database), onRestore) }; item { MoreRow(Icons.Default.FileDownload, stringResource(R.string.settings_export_csv), onExport) }; item { MoreRow(Icons.Default.FileUpload, stringResource(R.string.settings_import_csv), onImport) }; item { MoreRow(Icons.Default.Logout, stringResource(R.string.settings_logout), onLogout) }
-        item { RepairSchedulesSection() }
-        item { DangerZoneSection() } } }
+        item{Text(backupText,fontSize=10.sp,color=if(last==0L)AccentRed else AccentGreen,modifier=Modifier.padding(horizontal=5.dp,vertical=3.dp))}; item { MoreRow(Icons.Default.Backup, stringResource(R.string.settings_backup_database), onBackup) }; item { MoreRow(Icons.Default.Restore, stringResource(R.string.settings_restore_database), onRestore) }; item { MoreRow(Icons.Default.FileDownload, stringResource(R.string.settings_export_csv), onExport) }; item { MoreRow(Icons.Default.FileUpload, stringResource(R.string.settings_import_csv), onImport) }; item { MoreRow(Icons.Default.Logout, stringResource(R.string.settings_logout), onLogout) } } }
 }
 
 @Composable
@@ -2991,163 +3082,6 @@ private fun CloudSyncSection() {
             Spacer(Modifier.width(7.dp))
             Text(if (isRestoring) stringResource(R.string.labour_restoring) else stringResource(R.string.labour_restore_from_cloud))
         }
-    }
-}
-
-/**
- * Recomputes installments for every existing group that matches a fixed monthly plan
- * (50K/1L/2L/3L/10L), fixing groups created before the schedule bug was corrected (their
- * baseAmount was stored net-of-kasaru instead of gross, so CollectionService's
- * baseAmount-kasaruAmount subtracted the discount twice). Re-inserts by the same installment
- * id (REPLACE), so it never disturbs recorded payments (those reference installmentNo, not
- * amount) - it only preserves and rewrites baseAmount/kasaruAmount, keeping any existing
- * auctionDate/status/winningMemberId/payoutAmount untouched. Safe to run repeatedly.
- */
-@Composable
-private fun RepairSchedulesSection() {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var showConfirm by remember { mutableStateOf(false) }
-    var repairing by remember { mutableStateOf(false) }
-    val doneTemplate = stringResource(R.string.settings_repair_schedules_done)
-    val noneText = stringResource(R.string.settings_repair_schedules_none)
-
-    MoreRow(Icons.Default.Build, stringResource(R.string.settings_repair_schedules)) { showConfirm = true }
-
-    if (showConfirm) {
-        AlertDialog(
-            onDismissRequest = { if (!repairing) showConfirm = false },
-            icon = { Icon(Icons.Default.Build, null, tint = MaroonPrimary) },
-            title = { Text(stringResource(R.string.settings_repair_schedules_title)) },
-            text = { Text(stringResource(R.string.settings_repair_schedules_warning), fontSize = 12.sp, color = TextGray) },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (repairing) return@Button
-                        repairing = true
-                        scope.launch {
-                            val fixedCount = withContext(Dispatchers.IO) {
-                                val db = AppDatabase.getDatabase(context)
-                                var count = 0
-                                db.runInTransaction {
-                                    db.groupDao().getAllGroupsSync().forEach { group ->
-                                        val schedule = ChitTemplate.forChitValue(group.chitValue / 100)?.fixedSchedule?.takeIf { it.size == group.durationMonths } ?: return@forEach
-                                        val existing = db.installmentDao().getInstallmentsForGroupSync(group.id).associateBy { it.installmentNo }
-                                        val repaired = (1..group.durationMonths).map { number ->
-                                            val row = schedule[number - 1]
-                                            val current = existing[number]
-                                            InstallmentEntity().apply {
-                                                this.id = current?.id ?: "${group.id}-I$number"
-                                                groupId = group.id
-                                                installmentNo = number
-                                                baseAmount = (row.baseAmount + row.kasaruAmount) * 100
-                                                kasaruAmount = row.kasaruAmount * 100
-                                                payoutAmount = current?.payoutAmount ?: row.payoutAmount.takeIf { it > 0 }?.let { it * 100 }
-                                                auctionDate = current?.auctionDate
-                                                status = current?.status ?: "UPCOMING"
-                                                winningMemberId = current?.winningMemberId
-                                            }
-                                        }
-                                        db.installmentDao().insertAll(repaired)
-                                        count++
-                                    }
-                                    if (count > 0) {
-                                        db.activityLogDao().insertLog(ActivityLogEntity(actionType = "SCHEDULES_REPAIRED", title = "Chit schedules repaired", description = "$count group(s) resynced to the correct fixed monthly schedule"))
-                                    }
-                                }
-                                count
-                            }
-                            repairing = false
-                            showConfirm = false
-                            android.widget.Toast.makeText(context, if (fixedCount > 0) String.format(doneTemplate, fixedCount) else noneText, android.widget.Toast.LENGTH_LONG).show()
-                        }
-                    },
-                    enabled = !repairing,
-                    colors = ButtonDefaults.buttonColors(containerColor = MaroonPrimary)
-                ) {
-                    if (repairing) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
-                    else Text(stringResource(R.string.settings_repair_schedules_confirm_button))
-                }
-            },
-            dismissButton = { TextButton(onClick = { if (!repairing) showConfirm = false }, enabled = !repairing) { Text(stringResource(R.string.settings_delete_all_members_cancel)) } }
-        )
-    }
-}
-
-/**
- * Destructive local-only cleanup: wipes members, their group memberships and their payment
- * history from this device's database. Chit groups and the installment schedule are untouched.
- * Deliberately does NOT touch Firestore - cloud data already synced stays as-is, since this app
- * only has the client SDK (no admin credentials) and the sync rules aren't shaped for deletes.
- * Gated behind a typed "DELETE" confirmation because it's irreversible on-device.
- */
-@Composable
-private fun DangerZoneSection() {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var showConfirm by remember { mutableStateOf(false) }
-    var confirmText by remember { mutableStateOf("") }
-    var deleting by remember { mutableStateOf(false) }
-    val doneText = stringResource(R.string.settings_delete_all_members_done)
-
-    fun close() {
-        if (!deleting) { showConfirm = false; confirmText = "" }
-    }
-
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(stringResource(R.string.settings_danger_zone_title), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = AccentRed)
-        MoreRow(Icons.Default.PersonRemove, stringResource(R.string.settings_delete_all_members)) { showConfirm = true }
-    }
-
-    if (showConfirm) {
-        AlertDialog(
-            onDismissRequest = ::close,
-            icon = { Icon(Icons.Default.Warning, null, tint = AccentRed) },
-            title = { Text(stringResource(R.string.settings_delete_all_members_title)) },
-            text = {
-                Column {
-                    Text(stringResource(R.string.settings_delete_all_members_warning), fontSize = 12.sp, color = TextGray)
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = confirmText,
-                        onValueChange = { confirmText = it },
-                        label = { Text(stringResource(R.string.settings_delete_all_members_type_confirm)) },
-                        singleLine = true,
-                        enabled = !deleting,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (deleting || !confirmText.trim().equals("DELETE", ignoreCase = true)) return@Button
-                        deleting = true
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                val db = AppDatabase.getDatabase(context)
-                                db.runInTransaction {
-                                    db.paymentDao().deleteAll()
-                                    db.membershipDao().deleteAll()
-                                    db.memberDao().deleteAll()
-                                    db.activityLogDao().insertLog(ActivityLogEntity(actionType = "MEMBERS_DELETED_ALL", title = "All members deleted", description = "Members, memberships and payments cleared from this device via Settings"))
-                                }
-                            }
-                            deleting = false
-                            showConfirm = false
-                            confirmText = ""
-                            android.widget.Toast.makeText(context, doneText, android.widget.Toast.LENGTH_LONG).show()
-                        }
-                    },
-                    enabled = !deleting && confirmText.trim().equals("DELETE", ignoreCase = true),
-                    colors = ButtonDefaults.buttonColors(containerColor = AccentRed)
-                ) {
-                    if (deleting) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
-                    else Text(stringResource(R.string.settings_delete_all_members_confirm_button))
-                }
-            },
-            dismissButton = { TextButton(onClick = ::close, enabled = !deleting) { Text(stringResource(R.string.settings_delete_all_members_cancel)) } }
-        )
     }
 }
 

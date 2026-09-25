@@ -4,6 +4,8 @@ npm-debug.log*
 
 # Backend runtime data / secrets
 backend/database.sqlite
+backend/database.sqlite-wal
+backend/database.sqlite-shm
 backend/.env
 backend/*.env
 .env
@@ -28,6 +30,7 @@ android-app/build_output.txt
 android-app/local.properties
 android-app/app/google-services.json
 *.keystore
+android-app/keystore.properties
 *.jks
 
 # Legacy system analysis artifacts (binaries + old DB credentials, not project source)
@@ -36,3 +39,8 @@ analysis/soft_archive/
 # OS
 Thumbs.db
 .DS_Store
+
+# Firestore rules test project (local only)
+android-app/firestore-tests/node_modules/
+android-app/firestore-tests/firestore-debug.log
+*.log

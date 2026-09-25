@@ -18,5 +18,7 @@ public class CollectionReceiptEntity {
     public String notes;
     @NonNull public String businessDate;
     public long paidAt;
-    @NonNull public String status;
+    @NonNull public String status; // SAVED | VOIDED
+    public String voidReason;
+    public Long voidedAt;
 }

@@ -23,8 +23,10 @@ import com.jothivel.chits.data.local.dao.MembershipDao;
 import com.jothivel.chits.data.local.dao.CollectionReceiptDao;
 import com.jothivel.chits.data.local.entity.FinancialTransactionEntity;
 import com.jothivel.chits.data.local.dao.FinancialTransactionDao;
+import com.jothivel.chits.data.local.entity.CashHandoverEntity;
+import com.jothivel.chits.data.local.dao.CashHandoverDao;
 
-@Database(entities = {ChitGroupEntity.class, MemberEntity.class, InstallmentEntity.class, PaymentEntity.class, ActivityLogEntity.class, ChitMembershipEntity.class, CollectionReceiptEntity.class, FinancialTransactionEntity.class}, version = 13, exportSchema = false)
+@Database(entities = {ChitGroupEntity.class, MemberEntity.class, InstallmentEntity.class, PaymentEntity.class, ActivityLogEntity.class, ChitMembershipEntity.class, CollectionReceiptEntity.class, FinancialTransactionEntity.class, CashHandoverEntity.class}, version = 18, exportSchema = true)
 public abstract class AppDatabase extends RoomDatabase {
     
     public abstract GroupDao groupDao();
@@ -35,6 +37,10 @@ public abstract class AppDatabase extends RoomDatabase {
     public abstract MembershipDao membershipDao();
     public abstract CollectionReceiptDao collectionReceiptDao();
     public abstract FinancialTransactionDao financialTransactionDao();
+    public abstract CashHandoverDao cashHandoverDao();
+
+    /** The current schema version - restore validation accepts backups up to this version. */
+    public static final int DATABASE_VERSION = 18;
     
     private static volatile AppDatabase INSTANCE;
 
@@ -98,13 +104,66 @@ public abstract class AppDatabase extends RoomDatabase {
         }
     };
 
+    static final Migration MIGRATION_13_14 = new Migration(13, 14) {
+        @Override
+        public void migrate(SupportSQLiteDatabase database) {
+            database.execSQL("CREATE TABLE IF NOT EXISTS `cash_handovers` (`id` TEXT NOT NULL, `requestId` TEXT NOT NULL, `agentId` TEXT NOT NULL, `agentName` TEXT NOT NULL, `amountPaise` INTEGER NOT NULL, `handedAt` INTEGER NOT NULL, `businessDate` TEXT NOT NULL, `notes` TEXT, `status` TEXT NOT NULL, `reversalReason` TEXT, `reversedAt` INTEGER, PRIMARY KEY(`id`))");
+            database.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_cash_handovers_requestId` ON `cash_handovers` (`requestId`)");
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_cash_handovers_agentId_status` ON `cash_handovers` (`agentId`, `status`)");
+            database.execSQL("CREATE TABLE IF NOT EXISTS `daily_closings` (`id` TEXT NOT NULL, `businessDate` TEXT NOT NULL, `openingCashPaise` INTEGER NOT NULL, `expectedCashPaise` INTEGER NOT NULL, `countedCashPaise` INTEGER NOT NULL, `differencePaise` INTEGER NOT NULL, `notes` TEXT, `closedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))");
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_daily_closings_businessDate` ON `daily_closings` (`businessDate`)");
+        }
+    };
+
+    static final Migration MIGRATION_14_15 = new Migration(14, 15) {
+        @Override
+        public void migrate(SupportSQLiteDatabase database) {
+            database.execSQL("ALTER TABLE collection_receipts ADD COLUMN voidReason TEXT");
+            database.execSQL("ALTER TABLE collection_receipts ADD COLUMN voidedAt INTEGER");
+        }
+    };
+
+    static final Migration MIGRATION_15_16 = new Migration(15, 16) {
+        @Override
+        public void migrate(SupportSQLiteDatabase database) {
+            database.execSQL("CREATE TABLE IF NOT EXISTS `sync_records` (`recordKey` TEXT NOT NULL, `kind` TEXT NOT NULL, `localId` TEXT NOT NULL, `serverId` TEXT, `serverRef` TEXT, `contentHash` TEXT, `status` TEXT NOT NULL, `lastError` TEXT, `attempts` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, `receiptNo` TEXT, PRIMARY KEY(`recordKey`))");
+            database.execSQL("CREATE INDEX IF NOT EXISTS `index_sync_records_kind_status` ON `sync_records` (`kind`, `status`)");
+        }
+    };
+
+    /** The cash drawer count (opening / counted / difference) was removed from Daily Closing. */
+    static final Migration MIGRATION_16_17 = new Migration(16, 17) {
+        @Override
+        public void migrate(SupportSQLiteDatabase database) {
+            database.execSQL("DROP INDEX IF EXISTS `index_daily_closings_businessDate`");
+            database.execSQL("DROP TABLE IF EXISTS `daily_closings`");
+        }
+    };
+
+    /** Office server sync was removed; its record of server ids goes with it. */
+    static final Migration MIGRATION_17_18 = new Migration(17, 18) {
+        @Override
+        public void migrate(SupportSQLiteDatabase database) {
+            database.execSQL("DROP INDEX IF EXISTS `index_sync_records_kind_status`");
+            database.execSQL("DROP TABLE IF EXISTS `sync_records`");
+        }
+    };
+
     public static AppDatabase getDatabase(final Context context) {
         if (INSTANCE == null) {
             synchronized (AppDatabase.class) {
                 if (INSTANCE == null) {
                     INSTANCE = Room.databaseBuilder(context.getApplicationContext(),
                             AppDatabase.class, "jothivel_chits_database")
-                            .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13)
+                            .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18)
+                            // Schemas 1-5 were internal development builds that were never exported, so
+                            // no migration path can be written for them. Without this, an install that
+                            // still has one crashes on every launch with "a migration from N to 14 was
+                            // required"; with it, only those pre-release databases are recreated. Every
+                            // version from 6 up (the only ones ever shipped) keeps its data via the
+                            // explicit migrations above - there is deliberately NO blanket destructive
+                            // fallback.
+                            .fallbackToDestructiveMigrationFrom(1, 2, 3, 4, 5)
                             .build();
                 }
             }

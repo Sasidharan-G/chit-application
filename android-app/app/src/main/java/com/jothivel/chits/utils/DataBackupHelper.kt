@@ -100,7 +100,10 @@ object DataBackupHelper {
             val missing = REQUIRED_TABLES - tables
             if (missing.isNotEmpty()) throw IllegalArgumentException("Wrong backup: missing ${missing.joinToString()}")
             val version = sqlite.rawQuery("PRAGMA user_version", null).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
-            if (version !in 6..12) throw IllegalArgumentException("Unsupported backup database version: $version")
+            // Every version from 6 (the first shipped one) up to the schema this build uses can be
+            // opened and migrated by Room. Hard-coding the upper bound is what once made the app
+            // reject its own backups the moment the schema was bumped.
+            if (version !in MIN_SUPPORTED_BACKUP_VERSION..AppDatabase.DATABASE_VERSION) throw IllegalArgumentException("Unsupported backup database version: $version")
         } finally {
             sqlite.close()
         }
@@ -124,9 +127,10 @@ object DataBackupHelper {
                 val financial = db.financialTransactionDao().getAllSync()
                 val installments = groups.flatMap { db.installmentDao().getInstallmentsForGroupSync(it.id) }
                 val activity = db.activityLogDao().getAllSync()
+                val handovers = db.cashHandoverDao().getAllSync()
 
                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                    writeCsvToStream(outputStream, groups, members, payments, memberships, receipts, financial, installments, activity)
+                    writeCsvToStream(outputStream, groups, members, payments, memberships, receipts, financial, installments, activity, handovers)
                 } ?: return@withContext Result.failure(Exception("Could not open output stream"))
 
                 Result.success(Unit)
@@ -157,7 +161,8 @@ object DataBackupHelper {
         receipts: List<com.jothivel.chits.data.local.entity.CollectionReceiptEntity>,
         financial: List<com.jothivel.chits.data.local.entity.FinancialTransactionEntity>,
         installments: List<com.jothivel.chits.data.local.entity.InstallmentEntity>,
-        activity: List<com.jothivel.chits.data.local.entity.ActivityLogEntity>
+        activity: List<com.jothivel.chits.data.local.entity.ActivityLogEntity>,
+        handovers: List<com.jothivel.chits.data.local.entity.CashHandoverEntity>
     ) {
         val writer = outputStream.bufferedWriter()
         val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
@@ -214,6 +219,13 @@ object DataBackupHelper {
             writer.write("${csvEscape(i.id)},${csvEscape(i.groupId)},${csvEscape(i.installmentNo)},${csvEscape(i.baseAmount)},${csvEscape(i.kasaruAmount)},${csvEscape(i.payoutAmount)},${csvEscape(i.auctionDate)},${csvEscape(i.status)},${csvEscape(i.winningMemberId)}\n")
         }
 
+        // ── AGENT CASH HANDOVERS ───────────────────────────────────────────────
+        writer.write("\n--- AGENT CASH HANDOVERS ---\n")
+        writer.write("ID,Agent ID,Agent,Amount Paise,Business Date,Status,Timestamp,Notes,Reversal Reason\n")
+        handovers.forEach { h ->
+            writer.write("${csvEscape(h.id)},${csvEscape(h.agentId)},${csvEscape(h.agentName)},${csvEscape(h.amountPaise)},${csvEscape(h.businessDate)},${csvEscape(h.status)},${csvEscape(sdf.format(Date(h.handedAt)))},${csvEscape(h.notes)},${csvEscape(h.reversalReason)}\n")
+        }
+
         // ── AUDIT LOG ──────────────────────────────────────────────────────────
         writer.write("\n--- AUDIT LOG ---\n")
         writer.write("ID,Action,Title,Description,Timestamp\n")
@@ -225,6 +237,7 @@ object DataBackupHelper {
         writer.flush()
     }
 
+    private const val MIN_SUPPORTED_BACKUP_VERSION = 6
     private const val DATABASE_NAME = "jothivel_chits_database"
     private val REQUIRED_TABLES = setOf("members", "chit_groups", "installments", "payments")
 }

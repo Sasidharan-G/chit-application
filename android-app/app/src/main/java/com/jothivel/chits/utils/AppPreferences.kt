@@ -61,6 +61,9 @@ class AppPreferences(context: Context) {
         return prefs.getString(KEY_LANGUAGE, "en") ?: "en"
     }
 
+    /** True once a language has been explicitly chosen (as opposed to the "en" default). */
+    fun isLanguageSet(): Boolean = prefs.contains(KEY_LANGUAGE)
+
     fun setLanguage(langCode: String) {
         prefs.edit().putString(KEY_LANGUAGE, langCode).apply()
     }
@@ -76,6 +79,9 @@ class AppPreferences(context: Context) {
     fun getPin(): String {
         return prefs.getString(KEY_LOGIN_PIN, "") ?: ""
     }
+
+    /** True while no PIN of the admin's own has been set, i.e. the factory default is still in use. */
+    fun isUsingDefaultPin(): Boolean = getPin().isBlank()
 
     fun savePin(newPin: String) {
         prefs.edit().putString(KEY_LOGIN_PIN, hashPin(newPin)).apply()

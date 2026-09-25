@@ -7,7 +7,7 @@
 - [x] `AndroidManifest.xml`-ல் literal `` `n `` text இப்போது இல்லை (verified 2026-09-11).
 - [x] `ApiService.getGroups()` / `List<ChitGroupEntity>` types match ஆகின்றன (verified 2026-09-11).
 - [x] `ApiService`-ல் `getMembers()` endpoint declaration இப்போது உள்ளது (verified 2026-09-11).
-- [ ] `MemberRepository`/`GroupRepository`/`PaymentRepository` **still never actually call the backend** - `refreshGroups()`/`refreshMembers()` are commented-out TODO stubs, `PaymentRepository.recordPayment()` builds an `ApiService` but never calls it. **This is the single biggest remaining gap: almost none of the app's screens talk to this Node backend at all right now.** See new section "P0 - Client/Server Architecture Decision" below - needs a decision before more networking code is written.
+- [x] **FIXED 2026-09-25** - `GroupRepository` / `MemberRepository` / `PaymentRepository` now exist in `data/repository/` and are driven by `data/sync/SyncEngine` (see "Office server sync" under the architecture decision below). Old note, kept for history: `MemberRepository`/`GroupRepository`/`PaymentRepository` **still never actually call the backend** - `refreshGroups()`/`refreshMembers()` are commented-out TODO stubs, `PaymentRepository.recordPayment()` builds an `ApiService` but never calls it. **This is the single biggest remaining gap: almost none of the app's screens talk to this Node backend at all right now.** See new section "P0 - Client/Server Architecture Decision" below - needs a decision before more networking code is written.
 - [x] `backend/src/routes/payments.js` already imports `User` correctly (verified 2026-09-11).
 - [x] Gradle wrapper already present in repo (verified 2026-09-11).
 - [x] `./gradlew assembleDebug` builds successfully end-to-end (verified 2026-09-11, no errors).
@@ -15,9 +15,9 @@
 
 ## P0 - Authentication மற்றும் Security
 
-- [ ] **Admin login is still 100% local**: `LoginScreen`'s PIN pad calls `LoginViewModel.verifyPin()`, which only checks `AppPreferences.verifyPin()` against a locally-stored PIN hash - it never calls `AuthRepository`/`ApiService.login()`. The Node backend's `/auth/login`, JWT issuance, etc. are built but currently unreachable dead code from the shipping admin flow. Field agents log in separately via Firebase (`AgentAuthRepository`), not this backend either. Needs a decision - see "P0 - Client/Server Architecture Decision" below.
+- [x] **RESOLVED 2026-09-25** - the local PIN stays on purpose as the device lock; the server session is a separate ADMIN login (Settings > Office server sync) that goes through `AuthRepository` -> `POST /auth/login` (agent/member accounts are refused). Old note: **Admin login is still 100% local**: `LoginScreen`'s PIN pad calls `LoginViewModel.verifyPin()`, which only checks `AppPreferences.verifyPin()` against a locally-stored PIN hash - it never calls `AuthRepository`/`ApiService.login()`. The Node backend's `/auth/login`, JWT issuance, etc. are built but currently unreachable dead code from the shipping admin flow. Field agents log in separately via Firebase (`AgentAuthRepository`), not this backend either. Needs a decision - see "P0 - Client/Server Architecture Decision" below.
 - [ ] `demo_access_token` / `demo_refresh_token` - not found in current code (may already be gone, or never existed under that name); re-check once the login flow above is actually decided/wired.
-- [ ] `TokenAuthenticator` still just clears tokens and forces logout on 401 instead of calling `/auth/refresh-token` (moot until login above is wired to the real API).
+- [x] (already fixed - it refreshes through `/auth/refresh-token` and retries once, covered by `TokenAuthenticatorTest`) Old note: `TokenAuthenticator` still just clears tokens and forces logout on 401 instead of calling `/auth/refresh-token` (moot until login above is wired to the real API).
 - [x] Tokens already stored via `EncryptedSharedPreferences` in `TokenManager` (verified 2026-09-11).
 - [x] `/auth/seed-admin` now returns 404 outside dev, and only runs while no admin exists yet (fixed 2026-09-11).
 - [x] Default admin password removed; `seed-admin` now generates and returns a random one-time password (fixed 2026-09-11).
@@ -27,7 +27,7 @@
 - [x] Login rate limiting added (in-memory, 5 attempts / 15 min per IP+phone; swap for Redis if scaling to multiple server instances) (fixed 2026-09-11).
 - [x] CORS now restricted via `CORS_ALLOWED_ORIGINS` env var, required in production (fixed 2026-09-11).
 - [x] `usesCleartextTraffic` already `false` (verified 2026-09-11).
-- [ ] Hard-coded LAN `BASE_URL` in `ApiClient.java` (`192.168.0.27`) still needs to move to build config/environment.
+- [x] (fixed - `BASE_URL` now comes from `BuildConfig.API_BASE_URL` per build type, and the office-server address can be typed in Settings; release builds accept https only) Old note: Hard-coded LAN `BASE_URL` in `ApiClient.java` (`192.168.0.27`) still needs to move to build config/environment.
 - [x] Release builds no longer log request/response bodies (gated on `BuildConfig.DEBUG`) (fixed 2026-09-11).
 - [ ] `allowBackup="true"` still set - business decision on backup policy still pending.
 
@@ -55,7 +55,7 @@ The app currently has **three disconnected data paths** and this needs a decisio
 2. **Local-only Room DB** - what the app actually runs on today. Admin login is a locally-stored PIN check (`AppPreferences.verifyPin`), and Add Group / Add Member / Collect Payment all write only to local Room tables. Nothing here ever reaches a server, so multi-device/admin-office visibility, backend reports, and the backend's validation/integrity rules (all just fixed above) are currently bypassed entirely by the live app.
 3. **Firebase/Firestore** - a separate, more recently-started sync system for field agents (`data/firebase/*.kt`, see `firebase_agent_prompt_continuation.md`), with its own agent login (phone+PIN against Firestore `agents/`), its own admin->cloud->agent group/member/installment mirroring, and its own collection-sync queue. This is the only path with any real multi-device sync working, but it's for the agent/labour flow specifically, requires a `google-services.json` Firebase project the user hasn't provided yet, and per its own handoff doc has "not been compiled even once" as of when that doc was written (it does compile now, as of this pass, but hasn't been feature-tested).
 
-**Decision needed:** should admin Group/Member/Payment CRUD keep going to Node+SQLite (in which case `GroupRepository`/`MemberRepository`/`PaymentRepository`/`AuthRepository` need real wiring - a meaningful chunk of work, matching the "P1 - Offline-First Sync" section below), or is Firebase/Firestore now the intended single source of truth for everything (in which case the Node backend becomes optional/legacy and the fixes above just make it correct for whoever/whatever still calls it)? Don't guess on this silently - it changes where the next large chunk of engineering effort should go.
+**DECIDED 2026-09-25 (final): Firebase/Firestore only.** The office server sync (Node backend + reconciling Android sync layer) was built and then removed on request the same day: the `backend/` folder, `data/remote`, `data/sync`, `data/repository`, `TokenManager`, Settings > Office server sync, the Retrofit/OkHttp dependencies and `API_BASE_URL` are gone, and Room v18 (`MIGRATION_17_18`, tested) drops the `sync_records` table. The app is local Room + Cloud account (Firebase) for the agent flow. Backend-related items further down this checklist no longer apply.
 
 ## P1 - Backend API மற்றும் Validation
 
@@ -66,7 +66,7 @@ The app currently has **three disconnected data paths** and this needs a decisio
 - [x] Auction நடத்தும் முன் group `ACTIVE` என்பதை check செய்கிறது. (fixed 2026-09-11)
 - [x] Auction installments chronological order-ல் மட்டுமே finalize செய்ய validation உள்ளது. (fixed 2026-09-11)
 - [x] Winning bid upper limit (chitValue) மற்றும் commission percentage allowed range (0-20%) validate செய்கிறது. (fixed 2026-09-11)
-- [ ] Payment member அந்த installment group-ல் subscribed என்பதை validate செய்ய வேண்டும் (still not checked - a payment can currently be recorded for a member not subscribed to that installment's group).
+- [x] (verified 2026-09-25 - `POST /payments` answers 400 for a member who is not subscribed to the installment's group) Payment member அந்த installment group-ல் subscribed என்பதை validate செய்ய வேண்டும் (still not checked - a payment can currently be recorded for a member not subscribed to that installment's group).
 - [x] Payment mode மற்றும் UPI/bank reference requirements validate செய்கிறது. (fixed 2026-09-11)
 - [x] `/payments?groupId=` filter now actually implemented via an Installment join. (fixed 2026-09-11)
 - [ ] Role-based data scope: not implemented (moot for MEMBER since members can't log in to this backend at all; AGENT scoping needs an agent<->group assignment schema that doesn't exist yet on this backend - Firebase's agent system already has this, see architecture decision above).
@@ -92,16 +92,16 @@ The app currently has **three disconnected data paths** and this needs a decisio
 
 ## P1 - Offline-First Sync
 
-- [ ] Current mock `SyncWorker` sleep logic-ஐ real sync implementation-ஆக மாற்ற வேண்டும்.
-- [ ] Local changes-க்கு `syncStatus`, `updatedAt`, client operation ID போன்ற metadata சேர்க்க வேண்டும்.
-- [ ] Pending local writes-ஐ server-க்கு idempotently upload செய்ய வேண்டும்.
-- [ ] Server updates-ஐ incremental cursor/timestamp மூலம் download செய்ய வேண்டும்.
-- [ ] Successful upload பிறகே local row synced என்று mark செய்ய வேண்டும்.
-- [ ] Network/server failure-க்கு retry மற்றும் permanent validation failure-க்கு user-visible state சேர்க்க வேண்டும்.
-- [ ] Duplicate sync requests தவிர்க்க stable idempotency keys பயன்படுத்த வேண்டும்.
-- [ ] Same record local/server இரண்டிலும் மாறினால் conflict-resolution rule define செய்ய வேண்டும்.
-- [ ] Financial records/locked auctions-க்கு silent last-write-wins பயன்படுத்தக்கூடாது.
-- [ ] Sync status, last synced time மற்றும் failed item count UI-ல் காட்ட வேண்டும்.
+- [x] (no mock `SyncWorker` exists any more; `SyncEngine` + `SyncScheduler` replace it) Current mock `SyncWorker` sleep logic-ஐ real sync implementation-ஆக மாற்ற வேண்டும்.
+- [x] (done as a separate `sync_records` table, so the business tables are untouched) Local changes-க்கு `syncStatus`, `updatedAt`, client operation ID போன்ற metadata சேர்க்க வேண்டும்.
+- [x] (payments carry an idempotency key `clientRef`; chits and customers are re-linked by chit number / mobile, never duplicated) Pending local writes-ஐ server-க்கு idempotently upload செய்ய வேண்டும்.
+- [ ] Server updates-ஐ incremental cursor/timestamp மூலம் download செய்ய வேண்டும். (PARTIAL: chits/customers that exist only on the server are pulled by full list and only when new; edits made on the server and server-side payments are not pulled back.)
+- [x] (a `sync_records` row is written only after the server answered OK) Successful upload பிறகே local row synced என்று mark செய்ய வேண்டும்.
+- [x] (offline / signed-out stops the run and retries on the next trigger; a server refusal is stored per item with its reason and shown in Settings) Network/server failure-க்கு retry மற்றும் permanent validation failure-க்கு user-visible state சேர்க்க வேண்டும்.
+- [x] (one sync at a time behind a mutex; payments use `clientRef`) Duplicate sync requests தவிர்க்க stable idempotency keys பயன்படுத்த வேண்டும்.
+- [ ] Same record local/server இரண்டிலும் மாறினால் conflict-resolution rule define செய்ய வேண்டும். (Current rule: the phone is the source of truth - a customer/chit edited on the phone overwrites the server's copy on the next sync; there is no merge. Money is never overwritten, see below.)
+- [x] (payments are append-only receipts on the server; a void adds a reversing row, nothing is overwritten. Auctions are not synced at all yet, see "Not covered".) Financial records/locked auctions-க்கு silent last-write-wins பயன்படுத்தக்கூடாது.
+- [x] Sync status, last synced time மற்றும் failed item count UI-ல் காட்ட வேண்டும். (Settings > Office server sync)
 
 ## P1 - Database மற்றும் Migrations
 
@@ -161,3 +161,35 @@ The app currently has **three disconnected data paths** and this needs a decisio
 - [ ] Financial calculations மற்றும் database side effects verify செய்திருக்க வேண்டும்.
 - [ ] Sensitive data logs/responses-ல் leak ஆகவில்லை என்பதை verify செய்திருக்க வேண்டும்.
 
+
+## Audit fix pass (2026-09-25)
+
+Verified by `cd backend && npm test` (45 tests) and `cd android-app && gradle testDebugUnitTest` (101 tests).
+
+**Corrections to the notes above**
+- The "Dashboard call is live" claim is wrong: no Android code calls `GET /reports/dashboard` (or any other backend endpoint). The Node backend is still not wired to the app - that remains the open architecture decision.
+
+**Backend - fixed**
+- Auction no longer fails when a member pre-paid the installment (existing rows are re-based, money kept).
+- Append-only `PaymentTransaction` ledger; reports (collections, daily tally, monthly total) read from it; legacy rows are backfilled on start.
+- Dues/pending count include PARTIAL; `OVERDUE` is now set from the installment due date; P&L uses stored commission; report dates are local and validated.
+- Payout requires collected dues (override `forceUnpaid`) and validated body; `GET /payouts` filters work.
+- Receipts are rendered on demand at `GET /payments/:id/receipt.pdf` behind auth (nothing stored on disk).
+- `PUT /groups/:id` validated and regenerates installments for DRAFT; new `cancel`, `complete`, `DELETE` group, `DELETE` member (DRAFT).
+- MEMBER role scoped to own data; server exits non-zero if the DB cannot start; JSON 404/400 handlers; WhatsApp Cloud API adapter (`WHATSAPP_PROVIDER=meta`), masked mock logging.
+- Tests now exercise the real `KasaruService` and the HTTP API.
+
+**Android - fixed**
+- Installments fall due on the chit's start day (not the 1st); paise remainder goes into the last installment.
+- Daily Closing: day summary (office cash / agent cash / UPI / bank, settlement / delivery) and agent cash handover tracking (Room v14, migration tested). The cash drawer count (opening / counted / difference) was removed on request: `daily_closings` table dropped in Room v17 (`MIGRATION_16_17`, tested).
+- Ledger inline edits validated, logged and crash-safe; CSV import transactional, matches chits by number/name (ambiguous = stop), never overwrites chits, creates receipts, optional payment-date column.
+- Add Member: existing-code/mobile identity rules, rejoin, ticket, nominee, Aadhaar last-4; chit edit/close/reopen, member removal, auction winners; Delivery capped by the recorded prize.
+- Single language store; restore/sync no longer overwrite local rows; agents pull colleagues' collections; Pending/Group detail use bulk queries and no longer wait on the cloud.
+- Room schemas exported; release signing via `keystore.properties`; ProGuard rules; build-type API URL; token refresh implemented; dead code removed.
+
+**Still open (decisions / out of scope)**
+- Wire (or retire) the Node backend; Firestore auth model (see `firestore.rules` header); default admin PIN; allowBackup.
+- `payments.installmentId` still stores the installment number (no FK); "old code" still lives in the `panNo` column (renaming would break the deployed Firestore rules/cloud data).
+- Settlement remains free-form (its business rule is undefined). Settings > "Fix chit schedules" and the Danger Zone "Delete all members" were removed on request (2026-09-25).
+- One admin per app: the admin login PIN is also the Cloud account password (`AdminPin`, Firebase password derived from the PIN like the agents'). Change PIN / the forced first PIN change update Firebase first and leave the PIN unchanged if that fails; an account still on its separate console password is moved to the PIN at the next admin login, or via a one-time "old cloud password" field in Settings > Cloud account (`AdminPinTest`, 8 tests).
+- Validation messages coming from the data layer are English; screen labels/toasts are localized.

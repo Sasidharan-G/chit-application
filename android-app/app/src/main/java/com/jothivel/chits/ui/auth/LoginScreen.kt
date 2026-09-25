@@ -196,10 +196,14 @@ fun PinLoginScreen(
         isVisible = true
     }
 
-    // Observe login error to trigger shake
+    // Observe login errors to trigger the shake. Keyed on errorSeq (changes on every error), not on the
+    // message: the same wrong-PIN text twice in a row must still clear the dots and unlock the keypad.
     val loginError by viewModel.loginError.observeAsState()
-    LaunchedEffect(loginError) {
-        if (loginError != null) {
+    val errorSeq by viewModel.errorSeq.observeAsState(0)
+    var shownError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(errorSeq) {
+        if (errorSeq > 0) {
+            shownError = loginError ?: "Wrong PIN. Try again."
             isError = true
             triggerShake = true
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -264,11 +268,13 @@ fun PinLoginScreen(
             visible = isVisible,
             enter = fadeIn(tween(400, delayMillis = 400))
         ) {
+            // The error stays until the next digit is typed (it used to vanish after a second).
             Text(
-                if (isError) "Wrong PIN. Try again." else "Enter your PIN to continue",
+                shownError ?: "Enter your PIN to continue",
                 fontSize = 14.sp,
-                color = if (isError) PinDotError.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.7f),
-                fontWeight = if (isError) FontWeight.SemiBold else FontWeight.Normal
+                textAlign = TextAlign.Center,
+                color = if (shownError != null) PinDotError.copy(alpha = 0.9f) else Color.White.copy(alpha = 0.7f),
+                fontWeight = if (shownError != null) FontWeight.SemiBold else FontWeight.Normal
             )
         }
 
@@ -312,6 +318,7 @@ fun PinLoginScreen(
                 onNumberClick = { digit ->
                     if (pin.length < 4) {
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        shownError = null
                         pin += digit.toString()
                         if (pin.length == 4) {
                             // Auto-submit after 4th digit
@@ -358,6 +365,8 @@ fun AgentPinLoginScreen(
     var pin by remember { mutableStateOf("") }
     val isLoading by viewModel.isLoading.observeAsState(false)
     val loginError by viewModel.loginError.observeAsState()
+    val errorSeq by viewModel.errorSeq.observeAsState(0)
+    var shownError by remember { mutableStateOf<String?>(null) }
     val haptic = LocalHapticFeedback.current
 
     var triggerShake by remember { mutableStateOf(false) }
@@ -374,8 +383,10 @@ fun AgentPinLoginScreen(
     )
     var isError by remember { mutableStateOf(false) }
 
-    LaunchedEffect(loginError) {
-        if (loginError != null) {
+    // Keyed on errorSeq, not the message: the same error twice in a row must still reset the PIN dots.
+    LaunchedEffect(errorSeq) {
+        if (errorSeq > 0) {
+            shownError = loginError ?: "Login failed. Try again."
             isError = true
             triggerShake = true
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -415,12 +426,13 @@ fun AgentPinLoginScreen(
 
         Spacer(modifier = Modifier.height(14.dp))
 
+        // The error stays until the next digit is typed (it used to vanish after a second).
         Text(
-            if (isError) (loginError ?: "Login failed. Try again.") else "Enter your mobile number & PIN",
+            shownError ?: "Enter your mobile number & PIN",
             fontSize = 12.sp,
             textAlign = TextAlign.Center,
-            color = if (isError) PinDotError.copy(alpha = 0.95f) else Color.White.copy(alpha = 0.7f),
-            fontWeight = if (isError) FontWeight.SemiBold else FontWeight.Normal
+            color = if (shownError != null) PinDotError.copy(alpha = 0.95f) else Color.White.copy(alpha = 0.7f),
+            fontWeight = if (shownError != null) FontWeight.SemiBold else FontWeight.Normal
         )
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -493,6 +505,7 @@ fun AgentPinLoginScreen(
         NumberPad(
             onNumberClick = { digit ->
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                shownError = null
                 if (phone.length < 10) {
                     phone += digit.toString()
                     isError = false
