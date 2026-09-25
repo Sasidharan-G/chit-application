@@ -3035,8 +3035,23 @@ private fun CloudSyncSection() {
     val restoreSuccessTemplate = stringResource(R.string.labour_restore_success)
     val restoreFailedText = stringResource(R.string.labour_restore_failed)
 
+    // Chit / customer changes still waiting to go up (they are sent by themselves at AutoCloudSync.THRESHOLD).
+    val pendingChanges by produceState(initialValue = -1, isSyncing, isRestoring) {
+        while (true) {
+            value = withContext(Dispatchers.IO) { runCatching { com.jothivel.chits.data.firebase.FirestoreDataSync.pendingChanges(context) }.getOrDefault(-1) }
+            delay(8_000L)
+        }
+    }
+
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(stringResource(R.string.cloud_sync_section_title), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = TextGray)
+        if (pendingChanges >= 0) {
+            Text(
+                if (pendingChanges == 0) stringResource(R.string.cloud_sync_all_sent)
+                else stringResource(R.string.cloud_sync_pending, pendingChanges, com.jothivel.chits.data.firebase.AutoCloudSync.THRESHOLD),
+                fontSize = 10.sp, color = if (pendingChanges == 0) AccentGreen else TextGray
+            )
+        }
         Button(
             onClick = {
                 if (isSyncing || isRestoring) return@Button

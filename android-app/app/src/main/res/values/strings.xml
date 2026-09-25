@@ -381,6 +381,8 @@
     <string name="agentdetail_firebase_not_configured">Firebase not configured — showing assignment only, no live collection totals.</string>
     <string name="agentdetail_could_not_load">Could not load agent stats</string>
     <string name="cloud_sync_section_title">Cloud Sync</string>
+    <string name="cloud_sync_all_sent">Everything is saved in the cloud</string>
+    <string name="cloud_sync_pending">%1$d change(s) waiting. They are sent automatically at %2$d, or press Sync now.</string>
 
     <!-- ── chit management, cash closing, localized toasts (added with the audit fixes) ── -->
     <string name="common_save">Save</string>

@@ -9,48 +9,89 @@ import com.jothivel.chits.data.local.entity.ChitGroupEntity
 import com.jothivel.chits.data.local.entity.ChitMembershipEntity
 import com.jothivel.chits.data.local.entity.InstallmentEntity
 import com.jothivel.chits.data.local.entity.MemberEntity
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
- * Admin-only, one-time (repeatable) push of the reference data agents need to work offline:
- * active chit groups, their members, memberships and installment schedules. Triggered manually
- * from the Labour screen's "Sync Data to Cloud" button whenever the admin adds/changes members —
- * this is reference data, not a live feed, so a snapshot listener isn't needed here.
+ * Admin-only push of the reference data agents need to work offline: chit groups, their members,
+ * memberships and installment schedules. Two ways to run it:
+ *  - manually ("Sync Data to Cloud"): writes everything, which also repairs a cloud that lost data;
+ *  - automatically ([AutoCloudSync]): writes only the documents that changed since the last push (see
+ *    [CloudPushLedger]) and only once enough changes have piled up, to stay inside the free quota.
+ * This is reference data, not a live feed, so a snapshot listener isn't needed here.
  */
 object FirestoreDataSync {
 
+    /** How many documents of each kind were written. */
     data class SyncResult(val groups: Int, val members: Int, val memberships: Int, val installments: Int)
 
-    suspend fun syncAllToCloud(context: Context): Result<SyncResult> {
+    /** One document to write, and the group / customer it belongs to (used to count "changes"). */
+    internal data class PushDoc(val collection: String, val id: String, val data: Map<String, Any?>, val subject: String) {
+        val key: String get() = CloudPushLedger.key(collection, id)
+        val hash: String get() = CloudPushLedger.hash(data)
+    }
+
+    private val syncMutex = Mutex()
+
+    /** Every document that belongs in the cloud, stamped with the agents allowed to read it (see firestore.rules). */
+    internal fun buildDocs(db: AppDatabase, access: Map<String, List<String>>): List<PushDoc> {
+        // Push everything - including closed chits, deactivated members and memberships that
+        // have left a chit - so those changes reach the agents' phones and a restore. Sending
+        // only active rows meant a removal never overwrote the stale "active" copy in the cloud.
+        // (Agent screens only offer ACTIVE chits and active members, so closed data is inert there.)
+        val groups = db.groupDao().getAllGroupsSync()
+        val groupIds = groups.mapTo(hashSetOf()) { it.id }
+        val members = db.memberDao().getAllMembersSync()
+        val memberships = groupIds.flatMap { db.membershipDao().getAllForGroupSync(it) }
+        val installments = groupIds.flatMap { db.installmentDao().getInstallmentsForGroupSync(it) }
+
+        val agentsByMember = HashMap<String, MutableSet<String>>()
+        memberships.forEach { agentsByMember.getOrPut(it.memberId) { linkedSetOf() }.addAll(access[it.groupId].orEmpty()) }
+
+        return groups.map { PushDoc(FirestoreSchema.CHIT_GROUPS, it.id, groupMap(it, access[it.id].orEmpty()), "G:${it.id}") } +
+            members.map { PushDoc(FirestoreSchema.MEMBERS, it.id, memberMap(it, agentsByMember[it.id].orEmpty()), "M:${it.id}") } +
+            memberships.map { PushDoc(FirestoreSchema.CHIT_MEMBERSHIPS, it.id, membershipMap(it, access[it.groupId].orEmpty()), "M:${it.memberId}") } +
+            installments.map { PushDoc(FirestoreSchema.INSTALLMENTS, it.id, installmentMap(it, access[it.groupId].orEmpty()), "G:${it.groupId}") }
+    }
+
+    /** The groups and customers with at least one document that is not in the cloud yet or has changed. */
+    internal fun dirtySubjects(docs: List<PushDoc>, pushedHash: (String) -> String?): Set<String> =
+        docs.filter { pushedHash(it.key) != it.hash }.mapTo(linkedSetOf()) { it.subject }
+
+    /** How many groups / customers are waiting to be sent (the "changes" that [AutoCloudSync] counts). */
+    fun pendingChanges(context: Context): Int {
+        val ledger = CloudPushLedger.snapshot(context)
+        return dirtySubjects(buildDocs(AppDatabase.getDatabase(context), emptyMap())) { ledger[it] }.size
+    }
+
+    suspend fun syncAllToCloud(context: Context, onlyChanged: Boolean = false): Result<SyncResult> {
         val firestore = FirebaseSetup.firestoreIfSignedIn(context)
             ?: return Result.failure(IllegalStateException("Cloud account is not connected. Open Settings > Cloud account, sign in with the admin email, and check the internet connection."))
         return try {
-            val db = AppDatabase.getDatabase(context)
-            // Push everything - including closed chits, deactivated members and memberships that
-            // have left a chit - so those changes reach the agents' phones and a restore. Sending
-            // only active rows meant a removal never overwrote the stale "active" copy in the cloud.
-            // (Agent screens only offer ACTIVE chits and active members, so closed data is inert there.)
-            val groups = db.groupDao().getAllGroupsSync()
-            val groupIds = groups.mapTo(hashSetOf()) { it.id }
-            val members = db.memberDao().getAllMembersSync()
-            val memberships = groupIds.flatMap { db.membershipDao().getAllForGroupSync(it) }
-            val installments = groupIds.flatMap { db.installmentDao().getInstallmentsForGroupSync(it) }
-
-            // Every document is stamped with the agents allowed to read it (see firestore.rules).
-            val access = loadAgentAccess(firestore)
-            val agentsByMember = HashMap<String, MutableSet<String>>()
-            memberships.forEach { agentsByMember.getOrPut(it.memberId) { linkedSetOf() }.addAll(access[it.groupId].orEmpty()) }
-
-            writeInBatches(firestore, FirestoreSchema.CHIT_GROUPS, groups) { it.id to groupMap(it, access[it.id].orEmpty()) }
-            writeInBatches(firestore, FirestoreSchema.MEMBERS, members) { it.id to memberMap(it, agentsByMember[it.id].orEmpty()) }
-            writeInBatches(firestore, FirestoreSchema.CHIT_MEMBERSHIPS, memberships) { it.id to membershipMap(it, access[it.groupId].orEmpty()) }
-            writeInBatches(firestore, FirestoreSchema.INSTALLMENTS, installments) { it.id to installmentMap(it, access[it.groupId].orEmpty()) }
-
-            Result.success(SyncResult(groups.size, members.size, memberships.size, installments.size))
+            syncMutex.withLock {
+                val db = AppDatabase.getDatabase(context)
+                val docs = buildDocs(db, loadAgentAccess(firestore))
+                val ledger = CloudPushLedger.snapshot(context)
+                val toPush = if (onlyChanged) docs.filter { ledger[it.key] != it.hash } else docs
+                toPush.chunked(400).forEach { chunk ->
+                    val batch: WriteBatch = firestore.batch()
+                    chunk.forEach { batch.set(firestore.collection(it.collection).document(it.id), it.data) }
+                    batch.commit().await()
+                    // Remember each batch as soon as it is safely in the cloud, so a failure half way
+                    // does not send the finished part again.
+                    CloudPushLedger.putAll(context, chunk.associate { it.key to it.hash })
+                }
+                Result.success(SyncResult(
+                    groups = toPush.count { it.collection == FirestoreSchema.CHIT_GROUPS },
+                    members = toPush.count { it.collection == FirestoreSchema.MEMBERS },
+                    memberships = toPush.count { it.collection == FirestoreSchema.CHIT_MEMBERSHIPS },
+                    installments = toPush.count { it.collection == FirestoreSchema.INSTALLMENTS }
+                ))
+            }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
-
     data class RestoreResult(val groups: Int, val members: Int, val memberships: Int, val installments: Int, val collections: Int)
 
     /**
@@ -238,17 +279,6 @@ object FirestoreDataSync {
         changed.chunked(400).forEach { chunk ->
             val batch = firestore.batch()
             chunk.forEach { doc -> batch.update(firestore.collection(collection).document(doc.id), FirestoreSchema.AGENT_IDS, wanted(doc).sorted()) }
-            batch.commit().await()
-        }
-    }
-
-    private suspend fun <T> writeInBatches(firestore: FirebaseFirestore, collection: String, items: List<T>, toDoc: (T) -> Pair<String, Map<String, Any?>>) {
-        items.chunked(400).forEach { chunk ->
-            val batch: WriteBatch = firestore.batch()
-            chunk.forEach { item ->
-                val (id, data) = toDoc(item)
-                batch.set(firestore.collection(collection).document(id), data)
-            }
             batch.commit().await()
         }
     }

@@ -46,7 +46,12 @@ object AgentAuthRepository {
     private const val LOGIN_ATTEMPT_WINDOW_MS = 15 * 60 * 1000L
     private const val GENERIC_LOGIN_FAILURE = "Wrong mobile number or PIN."
     private const val ONLINE_TIMEOUT_MS = 15_000L
-    internal const val MAX_GEN = 3
+    /**
+     * Highest account generation of one phone number. Firebase cannot delete or re-password another
+     * user from a phone, so a reset only bumps the generation when the admin phone has no saved login for
+     * the agent ([AgentCredentialStore]); normally a reset or delete reuses / frees the same account.
+     */
+    internal const val MAX_GEN = 5
     private const val SECONDARY_APP = "agent-creator"
 
     /** The Auth email for an agent's phone number and account generation. */
@@ -259,6 +264,32 @@ object AgentAuthRepository {
         throw IllegalStateException("This phone number has been used for too many labour logins. Contact support.")
     }
 
+    /** Signs in as the agent on the helper Firebase app (the admin stays signed in) and sets a new password. */
+    private suspend fun changePasswordInPlace(context: Context, phone: String, saved: AgentCredentialStore.Creds, newPin: String): Boolean {
+        val auth = creatorAuth(context)
+        return try {
+            val user = auth.signInWithEmailAndPassword(agentEmail(phone, saved.gen), agentPassword(saved.pin)).await().user ?: return false
+            user.updatePassword(agentPassword(newPin)).await()
+            true
+        } catch (e: Exception) {
+            false // wrong / stale saved login, offline, ...: the caller falls back to a new generation
+        } finally {
+            runCatching { auth.signOut() }
+        }
+    }
+
+    /** Best effort: deletes the agent's Firebase account so its email can be used again. */
+    private suspend fun deleteAuthUser(context: Context, phone: String, saved: AgentCredentialStore.Creds) {
+        val auth = creatorAuth(context)
+        try {
+            auth.signInWithEmailAndPassword(agentEmail(phone, saved.gen), agentPassword(saved.pin)).await().user?.delete()?.await()
+        } catch (e: Exception) {
+            // Not deleted (offline / stale login): the account just stays; the agent record is removed anyway.
+        } finally {
+            runCatching { auth.signOut() }
+        }
+    }
+
     suspend fun createAgent(context: Context, name: String, phone: String, pin: String): Result<String> {
         val firestore = FirebaseSetup.firestoreIfSignedIn(context)
             ?: return Result.failure(IllegalStateException("Cloud account is not connected. Open Settings > Cloud account first."))
@@ -268,6 +299,7 @@ object AgentAuthRepository {
                 return Result.failure(IllegalStateException("A labour account with this phone number already exists."))
             }
             val (uid, gen) = createAuthUser(context, phone, pin, 0)
+            AgentCredentialStore.put(context, uid, gen, pin)
             val data = hashMapOf(
                 FirestoreSchema.Agent.NAME to name,
                 FirestoreSchema.Agent.PHONE to phone,
@@ -288,7 +320,11 @@ object AgentAuthRepository {
     suspend fun setActive(context: Context, agentId: String, isActive: Boolean): Result<Unit> =
         update(context, agentId, mapOf(FirestoreSchema.Agent.IS_ACTIVE to isActive))
 
-    /** New PIN = next account generation; the agent record (and its groups) moves to the new UID. */
+    /**
+     * Normally the same Firebase account gets the new PIN as its password (the admin phone kept the old
+     * one), so nothing else changes. Without a saved login the next account generation is created instead
+     * and the agent record (and its groups) moves to the new UID.
+     */
     suspend fun resetPin(context: Context, agentId: String, newPin: String): Result<Unit> {
         val firestore = FirebaseSetup.firestoreIfSignedIn(context)
             ?: return Result.failure(IllegalStateException("Cloud account is not connected. Open Settings > Cloud account first."))
@@ -297,7 +333,14 @@ object AgentAuthRepository {
             if (!old.exists()) return Result.failure(IllegalStateException("Agent not found."))
             val phone = old.getString(FirestoreSchema.Agent.PHONE).orEmpty()
             val currentGen = (old.getLong(FirestoreSchema.Agent.GEN) ?: 0L).toInt()
+            val saved = AgentCredentialStore.get(context, agentId)?.takeIf { it.gen == currentGen }
+            if (saved != null && changePasswordInPlace(context, phone, saved, newPin)) {
+                AgentCredentialStore.put(context, agentId, saved.gen, newPin)
+                return Result.success(Unit)
+            }
             val (newUid, gen) = createAuthUser(context, phone, newPin, currentGen + 1)
+            AgentCredentialStore.put(context, newUid, gen, newPin)
+            AgentCredentialStore.remove(context, agentId)
             @Suppress("UNCHECKED_CAST")
             val data = hashMapOf<String, Any?>(
                 FirestoreSchema.Agent.NAME to old.getString(FirestoreSchema.Agent.NAME).orEmpty(),
@@ -324,6 +367,14 @@ object AgentAuthRepository {
         val firestore = FirebaseSetup.firestoreIfSignedIn(context)
             ?: return Result.failure(IllegalStateException("Cloud account is not connected. Open Settings > Cloud account first."))
         return try {
+            // Free the phone number's Firebase account too (needs the saved login), so adding the same
+            // agent again starts from a clean account instead of using up a generation.
+            val doc = firestore.collection(FirestoreSchema.AGENTS).document(agentId).get().await()
+            val saved = AgentCredentialStore.get(context, agentId)
+            if (doc.exists() && saved != null && saved.gen == (doc.getLong(FirestoreSchema.Agent.GEN) ?: 0L).toInt()) {
+                deleteAuthUser(context, doc.getString(FirestoreSchema.Agent.PHONE).orEmpty(), saved)
+            }
+            AgentCredentialStore.remove(context, agentId)
             firestore.collection(FirestoreSchema.AGENTS).document(agentId).delete().await()
             refreshAccess(context, "Agent removed")
         } catch (e: Exception) {

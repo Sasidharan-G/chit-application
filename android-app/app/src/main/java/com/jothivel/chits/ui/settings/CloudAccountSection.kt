@@ -39,6 +39,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jothivel.chits.R
 import com.jothivel.chits.data.firebase.AdminPinSync
+import com.jothivel.chits.data.firebase.AutoCloudSync
+import com.jothivel.chits.data.firebase.FirebaseSyncService
 import com.jothivel.chits.data.firebase.CloudAccount
 import com.jothivel.chits.data.firebase.FirebaseSetup
 import com.jothivel.chits.ui.components.ConfirmBottomSheet
@@ -110,6 +112,9 @@ fun CloudAccountSection() {
                         is FirebaseSetup.AdminSignIn.Connected -> {
                             // Same PIN on every phone: send this phone's PIN up, or take the one already saved.
                             val pin = withContext(Dispatchers.IO) { AdminPinSync.sync(context) }
+                            // No restart needed: agent collections start arriving now, and waiting changes may go up.
+                            FirebaseSyncService.start(context)
+                            AutoCloudSync.requestCheck(context)
                             val message = if (pin == AdminPinSync.Result.Adopted) pinAdoptedToast else connectedToast
                             Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                             showSheet = false
@@ -133,7 +138,7 @@ fun CloudAccountSection() {
                 )
                 if (!email.isNullOrBlank()) TextButton(onClick = {
                     scope.launch {
-                        withContext(Dispatchers.IO) { CloudAccount.clear(context); FirebaseSetup.signOut() }
+                        withContext(Dispatchers.IO) { FirebaseSyncService.stop(); CloudAccount.clear(context); FirebaseSetup.signOut() }
                         Toast.makeText(context, disconnectedToast, Toast.LENGTH_SHORT).show()
                         showSheet = false
                         refreshKey++

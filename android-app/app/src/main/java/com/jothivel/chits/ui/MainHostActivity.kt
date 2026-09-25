@@ -11,6 +11,8 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.jothivel.chits.R
 import com.jothivel.chits.data.firebase.AdminPinSync
+import com.jothivel.chits.data.firebase.AutoCloudSync
+import com.jothivel.chits.data.firebase.FirebaseSyncService
 import com.jothivel.chits.data.firebase.SessionGuard
 import kotlinx.coroutines.delay
 import com.jothivel.chits.ui.base.BaseActivity
@@ -31,6 +33,10 @@ class MainHostActivity : BaseActivity() {
         const val IDLE_LOCK_MS = 3 * 60 * 1000L
         /** The cloud is asked for the shared admin PIN every this many one-minute check-ins. */
         const val PIN_CHECK_EVERY = 10
+        /** The admin's collections listener is renewed every this many check-ins (minutes). */
+        const val LISTENER_REFRESH_EVERY = 30
+        /** A failed automatic cloud push is retried every this many check-ins (minutes). */
+        const val AUTO_SYNC_CHECK_EVERY = 5
     }
 
     private val backupDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/x-sqlite3")) { uri ->
@@ -91,6 +97,8 @@ class MainHostActivity : BaseActivity() {
 
         if (com.jothivel.chits.utils.AppPreferences(this).getUserRole() == com.jothivel.chits.utils.AppPreferences.ROLE_ADMIN) {
             com.jothivel.chits.data.firebase.FirebaseSyncService.start(this)
+            // Chit / customer changes go to the cloud by themselves once enough have piled up.
+            AutoCloudSync.start(this)
         }
 
         startSessionHeartbeat()
@@ -123,6 +131,7 @@ class MainHostActivity : BaseActivity() {
     override fun onDestroy() {
         super.onDestroy()
         com.jothivel.chits.data.firebase.FirebaseSyncService.stop()
+        AutoCloudSync.stop()
     }
 
     // One login, one phone (see SessionGuard): while the app is on screen this phone checks in every
@@ -141,9 +150,18 @@ class MainHostActivity : BaseActivity() {
                     // cloud goes up as soon as the phone is online; otherwise the cloud is asked now
                     // and then, so a PIN changed on another phone arrives here too.
                     val prefs = com.jothivel.chits.utils.AppPreferences(applicationContext)
-                    if (prefs.getUserRole() == com.jothivel.chits.utils.AppPreferences.ROLE_ADMIN && (beats % PIN_CHECK_EVERY == 0 || prefs.isPinDirty())) {
-                        val pin = withContext(Dispatchers.IO) { AdminPinSync.sync(applicationContext) }
-                        if (pin == AdminPinSync.Result.Adopted) Toast.makeText(applicationContext, getString(R.string.host_pin_changed_elsewhere), Toast.LENGTH_LONG).show()
+                    if (prefs.getUserRole() == com.jothivel.chits.utils.AppPreferences.ROLE_ADMIN) {
+                        if (beats % PIN_CHECK_EVERY == 0 || prefs.isPinDirty()) {
+                            val pin = withContext(Dispatchers.IO) { AdminPinSync.sync(applicationContext) }
+                            if (pin == AdminPinSync.Result.Adopted) Toast.makeText(applicationContext, getString(R.string.host_pin_changed_elsewhere), Toast.LENGTH_LONG).show()
+                        }
+                        // The collections listener attaches as soon as the cloud can be reached (opened
+                        // offline, or the Cloud account connected later) and is renewed now and then so
+                        // any collection that could not be applied before is read again.
+                        FirebaseSyncService.start(applicationContext)
+                        if (beats > 0 && beats % LISTENER_REFRESH_EVERY == 0) FirebaseSyncService.restart(applicationContext)
+                        // Retry an automatic push that could not go out (no internet).
+                        if (beats % AUTO_SYNC_CHECK_EVERY == 0) AutoCloudSync.requestCheck(applicationContext)
                     }
                     beats++
                     delay(SessionGuard.HEARTBEAT_MS)

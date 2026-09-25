@@ -381,6 +381,8 @@
     <string name="agentdetail_firebase_not_configured">Firebase அமைக்கப்படவில்லை — ஒதுக்கீடு மட்டும் காட்டப்படுகிறது, நேரடி வசூல் தொகை இல்லை.</string>
     <string name="agentdetail_could_not_load">முகவர் புள்ளிவிவரங்களை ஏற்ற முடியவில்லை</string>
     <string name="cloud_sync_section_title">Cloud ஒத்திசைவு</string>
+    <string name="cloud_sync_all_sent">எல்லாம் cloud-இல் சேமிக்கப்பட்டுள்ளது</string>
+    <string name="cloud_sync_pending">%1$d மாற்றம்(ங்கள்) காத்திருக்கின்றன. %2$d ஆனதும் தானாக அனுப்பப்படும், அல்லது இப்போதே Sync அழுத்தவும்.</string>
 
     <!-- ── chit management, cash closing, localized toasts (added with the audit fixes) ── -->
     <string name="common_save">சேமி</string>
