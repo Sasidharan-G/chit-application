@@ -5,16 +5,18 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -33,18 +35,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jothivel.chits.R
+import com.jothivel.chits.data.firebase.AdminAccount
 import com.jothivel.chits.data.firebase.AdminPinSync
 import com.jothivel.chits.data.firebase.AutoCloudSync
-import com.jothivel.chits.data.firebase.FirebaseSyncService
 import com.jothivel.chits.data.firebase.CloudAccount
 import com.jothivel.chits.data.firebase.FirebaseSetup
-import com.jothivel.chits.ui.components.ConfirmBottomSheet
-import com.jothivel.chits.ui.components.PremiumInputField
+import com.jothivel.chits.data.firebase.FirebaseSyncService
 import com.jothivel.chits.ui.theme.AccentGreen
 import com.jothivel.chits.ui.theme.AccentRed
 import com.jothivel.chits.ui.theme.DividerGray
@@ -55,24 +54,72 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Settings row where the admin connects this device to the shared Firebase project with the admin
- * email + password created in the Firebase console. Every new phone has to be given both - no password
- * is built into the app, and the app never changes it. Without a connection, cloud sync, restore and
- * labour management do nothing.
+ * Settings row for the app's one fixed cloud account ([AdminAccount]) - there is nothing to type any
+ * more, so this is a one-tap switch: "Connect" signs this phone in, "Disconnect this phone" signs it
+ * out and turns cloud sync off here. Cloud sync, restore and labour management do nothing while off.
  */
 @Composable
 fun CloudAccountSection() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var refreshKey by remember { mutableIntStateOf(0) }
-    var showSheet by remember { mutableStateOf(false) }
-    val email by produceState<String?>(null, refreshKey) { value = withContext(Dispatchers.IO) { CloudAccount.email(context) } }
+    var showDisconnectConfirm by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    val connected by produceState(false, refreshKey, busy) {
+        value = if (busy) value else withContext(Dispatchers.IO) {
+            CloudAccount.isConfigured(context) && FirebaseSetup.connectAdmin(context) is FirebaseSetup.AdminSignIn.Connected
+        }
+    }
     val connectedToast = stringResource(R.string.cloud_account_ok)
     val pinAdoptedToast = stringResource(R.string.cloud_account_pin_adopted)
     val disconnectedToast = stringResource(R.string.cloud_account_disconnected)
+    val noAccountToast = stringResource(R.string.cloud_account_no_account)
+
+    fun connect() {
+        if (!AdminAccount.hasCredentials) {
+            Toast.makeText(context, noAccountToast, Toast.LENGTH_LONG).show()
+            return
+        }
+        busy = true
+        scope.launch {
+            CloudAccount.setEnabled(context, true)
+            val result = withContext(Dispatchers.IO) { FirebaseSetup.connectAdmin(context) }
+            when (result) {
+                is FirebaseSetup.AdminSignIn.Connected -> {
+                    // Same PIN everywhere: send this phone's PIN up, or take the one already saved.
+                    val pin = withContext(Dispatchers.IO) { AdminPinSync.sync(context) }
+                    FirebaseSyncService.start(context)
+                    AutoCloudSync.requestCheck(context)
+                    Toast.makeText(context, if (pin == AdminPinSync.Result.Adopted) pinAdoptedToast else connectedToast, Toast.LENGTH_LONG).show()
+                }
+                is FirebaseSetup.AdminSignIn.Failed -> {
+                    CloudAccount.setEnabled(context, false)
+                    Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
+                }
+                FirebaseSetup.AdminSignIn.NotConfigured -> Unit
+            }
+            busy = false
+            refreshKey++
+        }
+    }
+
+    fun disconnect() {
+        busy = true
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                FirebaseSyncService.stop()
+                CloudAccount.setEnabled(context, false)
+                FirebaseSetup.signOut()
+            }
+            Toast.makeText(context, disconnectedToast, Toast.LENGTH_SHORT).show()
+            busy = false
+            showDisconnectConfirm = false
+            refreshKey++
+        }
+    }
 
     Surface(
-        Modifier.fillMaxWidth().height(56.dp).clickable { showSheet = true },
+        Modifier.fillMaxWidth().height(56.dp).clickable(enabled = !busy) { if (connected) showDisconnectConfirm = true else connect() },
         shape = RoundedCornerShape(10.dp), color = Color.White, border = BorderStroke(1.dp, DividerGray.copy(alpha = .8f))
     ) {
         Row(Modifier.padding(horizontal = 11.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -80,71 +127,27 @@ fun CloudAccountSection() {
             Column(Modifier.padding(start = 10.dp).weight(1f)) {
                 Text(stringResource(R.string.cloud_account_title), fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 Text(
-                    if (email.isNullOrBlank()) stringResource(R.string.cloud_account_not_connected) else stringResource(R.string.cloud_account_connected, email.orEmpty()),
-                    fontSize = 9.sp, color = if (email.isNullOrBlank()) AccentRed else AccentGreen
+                    if (connected) stringResource(R.string.cloud_account_connected, AdminAccount.EMAIL) else stringResource(R.string.cloud_account_not_connected),
+                    fontSize = 9.sp, color = if (connected) AccentGreen else AccentRed
                 )
             }
-            Icon(Icons.Default.ChevronRight, null, tint = TextGray, modifier = Modifier.size(17.dp))
+            if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Default.ChevronRight, null, tint = TextGray, modifier = Modifier.size(17.dp))
         }
     }
 
-    if (showSheet) {
-        var emailInput by remember { mutableStateOf(email.orEmpty()) }
-        var passwordInput by remember { mutableStateOf("") }
-        var busy by remember { mutableStateOf(false) }
-        ConfirmBottomSheet(
-            show = true,
-            onDismiss = { showSheet = false },
-            title = stringResource(R.string.cloud_account_title),
-            message = stringResource(R.string.cloud_account_hint),
-            confirmLabel = stringResource(R.string.cloud_account_connect),
-            cancelLabel = stringResource(R.string.common_cancel),
-            confirmEnabled = !busy && emailInput.isNotBlank() && passwordInput.length >= 6,
-            onConfirm = {
-                busy = true
-                scope.launch {
-                    val result = withContext(Dispatchers.IO) {
-                        CloudAccount.save(context, emailInput, passwordInput)
-                        FirebaseSetup.connectAdmin(context)
-                    }
-                    busy = false
-                    when (result) {
-                        is FirebaseSetup.AdminSignIn.Connected -> {
-                            // Same PIN on every phone: send this phone's PIN up, or take the one already saved.
-                            val pin = withContext(Dispatchers.IO) { AdminPinSync.sync(context) }
-                            // No restart needed: agent collections start arriving now, and waiting changes may go up.
-                            FirebaseSyncService.start(context)
-                            AutoCloudSync.requestCheck(context)
-                            val message = if (pin == AdminPinSync.Result.Adopted) pinAdoptedToast else connectedToast
-                            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                            showSheet = false
-                        }
-                        is FirebaseSetup.AdminSignIn.Failed -> {
-                            withContext(Dispatchers.IO) { CloudAccount.clear(context) }
-                            Toast.makeText(context, result.message, Toast.LENGTH_LONG).show()
-                        }
-                        FirebaseSetup.AdminSignIn.NotConfigured -> Unit
-                    }
-                    refreshKey++
+    if (showDisconnectConfirm) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showDisconnectConfirm = false },
+            icon = { Icon(Icons.Default.Cloud, null, tint = MaroonPrimary) },
+            title = { Text(stringResource(R.string.cloud_account_title)) },
+            text = { Text(stringResource(R.string.cloud_account_disconnect_confirm, AdminAccount.EMAIL)) },
+            confirmButton = {
+                Button(onClick = ::disconnect, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = AccentRed)) {
+                    Text(stringResource(R.string.cloud_account_disconnect))
                 }
             },
-            content = {
-                PremiumInputField(emailInput, { emailInput = it.trim() }, stringResource(R.string.cloud_account_email), Modifier.fillMaxWidth(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
-                Spacer(Modifier.height(8.dp))
-                PremiumInputField(
-                    passwordInput, { passwordInput = it }, stringResource(R.string.cloud_account_password), Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    visualTransformation = PasswordVisualTransformation()
-                )
-                if (!email.isNullOrBlank()) TextButton(onClick = {
-                    scope.launch {
-                        withContext(Dispatchers.IO) { FirebaseSyncService.stop(); CloudAccount.clear(context); FirebaseSetup.signOut() }
-                        Toast.makeText(context, disconnectedToast, Toast.LENGTH_SHORT).show()
-                        showSheet = false
-                        refreshKey++
-                    }
-                }) { Text(stringResource(R.string.cloud_account_disconnect), color = AccentRed, fontSize = 12.sp) }
-            }
+            dismissButton = { TextButton(onClick = { showDisconnectConfirm = false }, enabled = !busy) { Text(stringResource(R.string.common_cancel)) } }
         )
     }
 }

@@ -16,8 +16,8 @@ import com.jothivel.chits.utils.AppPreferences
  * (in admin-only mode) on installs that don't have app/google-services.json yet, so every
  * caller goes through [firestoreOrNull] instead of calling FirebaseFirestore.getInstance() directly.
  *
- * Identity: nobody is anonymous any more. The ADMIN signs in with the email/password saved in
- * [CloudAccount] and must have a document in `admins/{uid}`; an AGENT is signed in by
+ * Identity: nobody is anonymous any more. The ADMIN signs in with the one fixed email/password in
+ * [AdminAccount] and must have a document in `admins/{uid}`; an AGENT is signed in by
  * [AgentAuthRepository.login] (Firebase Auth checks their PIN) and must have an active `agents/{uid}`.
  * Firestore's security rules key off exactly those two facts - see firestore.rules.
  */
@@ -77,10 +77,10 @@ object FirebaseSetup {
      * `admins/{uid}`. Safe to call repeatedly - it does nothing when the right user is already signed in.
      */
     suspend fun connectAdmin(context: Context): AdminSignIn {
+        if (!CloudAccount.isConfigured(context)) return AdminSignIn.NotConfigured
         val firestore = firestoreOrNull(context) ?: return AdminSignIn.Failed("Firebase is not configured on this install.")
-        val email = CloudAccount.email(context)
-        val password = CloudAccount.password(context)
-        if (email.isNullOrBlank() || password.isNullOrBlank()) return AdminSignIn.NotConfigured
+        val email = AdminAccount.EMAIL
+        val password = AdminAccount.PASSWORD
         val auth = FirebaseAuth.getInstance()
         return try {
             var user = auth.currentUser

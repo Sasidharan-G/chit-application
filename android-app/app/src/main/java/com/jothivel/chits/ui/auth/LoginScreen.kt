@@ -346,6 +346,19 @@ fun PinLoginScreen(
             )
         }
 
+        // ── Reinstalled / new phone: restore the PIN already used elsewhere ───
+        var showRestore by remember { mutableStateOf(false) }
+        Spacer(modifier = Modifier.height(14.dp))
+        TextButton(onClick = { showRestore = true }, enabled = !isLoading) {
+            Text(stringResource(R.string.restore_pin_link), color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+        }
+        if (showRestore) {
+            RestoreWithPinDialog(
+                onDismiss = { showRestore = false },
+                onRestored = { showRestore = false; viewModel.completeAfterRestore() }
+            )
+        }
+
         Spacer(modifier = Modifier.weight(1f))
     }
 }

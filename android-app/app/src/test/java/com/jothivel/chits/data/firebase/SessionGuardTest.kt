@@ -60,25 +60,25 @@ class SessionGuardTest {
         assertNotEquals(first, SessionGuard.deviceId(app))
     }
 
-    @Test fun `no cloud account means no blocking at admin login`() {
+    @Test fun `cloud sync off means no blocking at admin login`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
-        CloudAccount.clear(app)
+        CloudAccount.setEnabled(app, false)
         assertEquals(null, SessionGuard.adminLoginBlockMessage(app))
+        CloudAccount.setEnabled(app, true)
     }
 
-    @Test fun `a new phone has no cloud credentials until the admin types them`() {
+    @Test fun `the admin email is fixed, and cloud sync can be turned off for this phone`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
-        CloudAccount.clear(app)
-        assertEquals(null, CloudAccount.email(app))
-        assertEquals(null, CloudAccount.password(app))
+        CloudAccount.setEnabled(app, true)
+        assertEquals(AdminAccount.EMAIL, CloudAccount.email(app))
+        assertTrue(AdminAccount.hasCredentials)
+        assertTrue(CloudAccount.isConfigured(app))
+
+        CloudAccount.setEnabled(app, false)
+        assertEquals(AdminAccount.EMAIL, CloudAccount.email(app)) // still fixed even when off
         assertEquals(false, CloudAccount.isConfigured(app))
 
-        CloudAccount.save(app, " owner@example.com ", "typed-by-admin")
-        assertEquals("owner@example.com", CloudAccount.email(app))
-        assertEquals("typed-by-admin", CloudAccount.password(app))
+        CloudAccount.setEnabled(app, true)
         assertEquals(true, CloudAccount.isConfigured(app))
-
-        CloudAccount.clear(app)
-        assertEquals(false, CloudAccount.isConfigured(app))
     }
 }

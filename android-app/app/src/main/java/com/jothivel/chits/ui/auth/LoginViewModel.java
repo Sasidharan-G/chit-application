@@ -41,6 +41,18 @@ public class LoginViewModel extends AndroidViewModel {
         errorSeq.postValue(errorCounter.incrementAndGet());
     }
 
+    /**
+     * Called after [com.jothivel.chits.data.firebase.AdminAccount.restoreWithPin] already verified this
+     * phone's PIN against the one saved in the cloud (see RestoreWithPinDialog). Completes the login the
+     * same way a correct PIN typed here would.
+     */
+    public void completeAfterRestore() {
+        appPreferences.clearAdminPinFailures();
+        appPreferences.setAdminSetup(true);
+        appPreferences.clearAgentSession();
+        loginSuccess.setValue(true);
+    }
+
     public void setupAdminProfile(String name, String phone, String username, String pin) {
         if (name == null || name.isEmpty() || phone == null || phone.isEmpty() || username == null || username.isEmpty() || pin == null || pin.isEmpty()) {
             fail("All fields are required");

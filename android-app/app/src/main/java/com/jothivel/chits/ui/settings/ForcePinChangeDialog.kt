@@ -25,9 +25,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jothivel.chits.R
-import com.jothivel.chits.data.firebase.AdminPinSync
-import com.jothivel.chits.data.firebase.CloudAccount
-import com.jothivel.chits.data.firebase.FirebaseSetup
+import com.jothivel.chits.data.firebase.AdminAccount
 import com.jothivel.chits.ui.theme.AccentRed
 import com.jothivel.chits.ui.theme.MaroonPrimary
 import com.jothivel.chits.utils.AppPreferences
@@ -46,8 +44,10 @@ internal fun isWeakPin(pin: String): Boolean {
 /**
  * Shown over the admin app for as long as this device still uses the factory PIN 1234 - it cannot be
  * dismissed, so no install stays open to everyone who knows the default. The admin either chooses a PIN
- * (the very first phone) or, on an extra phone, signs in with the cloud email + password and the PIN
- * already in use, which this phone then adopts (see AdminPinSync).
+ * (the very first phone ever, before the cloud has one saved) or, on any other phone - including a
+ * reinstall - taps "I already use this app on another phone" and types the PIN already in use, which
+ * this phone then adopts (see [AdminAccount.restoreWithPin]). The cloud account itself is fixed; nothing
+ * is typed for it here.
  */
 @Composable
 fun ForcePinChangeDialog(onDone: () -> Unit) {
@@ -55,8 +55,6 @@ fun ForcePinChangeDialog(onDone: () -> Unit) {
     var existingAccount by remember { mutableStateOf(false) }
     var newPin by remember { mutableStateOf("") }
     var confirmPin by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
     var existingPin by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
@@ -79,6 +77,7 @@ fun ForcePinChangeDialog(onDone: () -> Unit) {
                 saving = true
                 scope.launch {
                     // The first PIN of a phone is not pushed to the cloud on its own: see AppPreferences.changePin.
+                    // If the cloud is empty, MainHostActivity's next check-in pushes it up as the account's PIN.
                     val changed = withContext(Dispatchers.IO) { AppPreferences(context).changePin("1234", newPin, share = false) }
                     saving = false
                     if (changed) onDone() else error = errFailed
@@ -88,24 +87,18 @@ fun ForcePinChangeDialog(onDone: () -> Unit) {
     }
 
     fun useExistingPin() {
-        if (email.isBlank() || password.length < 6 || existingPin.length != 4) { error = errFill; return }
+        if (existingPin.length != 4) { error = errFill; return }
         saving = true
         scope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                CloudAccount.save(context, email, password)
-                when (val signIn = FirebaseSetup.connectAdmin(context)) {
-                    is FirebaseSetup.AdminSignIn.Failed -> { CloudAccount.clear(context); signIn.message }
-                    FirebaseSetup.AdminSignIn.NotConfigured -> errOffline
-                    FirebaseSetup.AdminSignIn.Connected -> when (AdminPinSync.restoreOnNewPhone(context, existingPin)) {
-                        AdminPinSync.Restore.Restored -> null
-                        AdminPinSync.Restore.WrongPin -> errWrongPin
-                        AdminPinSync.Restore.NoCloudPin -> errNoCloudPin
-                        AdminPinSync.Restore.Unreachable -> errOffline
-                    }
-                }
-            }
+            val outcome = withContext(Dispatchers.IO) { AdminAccount.restoreWithPin(context, existingPin) }
             saving = false
-            if (outcome == null) onDone() else error = outcome
+            when (outcome) {
+                AdminAccount.RestoreOutcome.Restored -> onDone()
+                AdminAccount.RestoreOutcome.WrongPin -> error = errWrongPin
+                AdminAccount.RestoreOutcome.NoCloudPin -> error = errNoCloudPin
+                AdminAccount.RestoreOutcome.Unreachable -> error = errOffline
+                is AdminAccount.RestoreOutcome.ConnectFailed -> error = outcome.message
+            }
         }
     }
 
@@ -117,19 +110,6 @@ fun ForcePinChangeDialog(onDone: () -> Unit) {
                 Text(stringResource(if (existingAccount) R.string.force_pin_existing_message else R.string.force_pin_message), fontSize = 12.sp)
                 Spacer(Modifier.height(10.dp))
                 if (existingAccount) {
-                    OutlinedTextField(
-                        value = email, onValueChange = { email = it.trim(); error = null },
-                        label = { Text(stringResource(R.string.cloud_account_email)) }, singleLine = true, enabled = !saving,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = password, onValueChange = { password = it; error = null },
-                        label = { Text(stringResource(R.string.cloud_account_password)) }, singleLine = true, enabled = !saving,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
                     PinField(existingPin, R.string.force_pin_existing_pin, !saving) { existingPin = it; error = null }
                 } else {
                     PinField(newPin, R.string.settings_change_pin_new, !saving) { newPin = it; error = null }

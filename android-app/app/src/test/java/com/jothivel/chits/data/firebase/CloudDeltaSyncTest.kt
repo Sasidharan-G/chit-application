@@ -9,7 +9,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -124,26 +123,26 @@ class CloudDeltaSyncTest {
         assertEquals(CloudPushLedger.hash(mapOf("a" to 1, "b" to 2)), CloudPushLedger.hash(mapOf("b" to 2, "a" to 1)))
     }
 
-    @Test fun `the record survives and is wiped with the cloud account`() {
+    @Test fun `the record of what was pushed survives turning cloud sync off and on`() {
         CloudPushLedger.putAll(app, mapOf("members/M1" to "abc"))
         assertEquals("abc", CloudPushLedger.get(app, "members/M1"))
         assertEquals(mapOf("members/M1" to "abc"), CloudPushLedger.snapshot(app))
 
-        CloudAccount.save(app, "owner@example.com", "pw-123456")
-        CloudPushLedger.putAll(app, mapOf("members/M1" to "abc"))
-        CloudAccount.save(app, "OWNER@example.com", "pw-123456") // same account: kept
+        // There is only one cloud account, so disabling/enabling sync never touches it - it is the
+        // same database either way.
+        CloudAccount.setEnabled(app, false)
         assertEquals("abc", CloudPushLedger.get(app, "members/M1"))
-        CloudAccount.save(app, "other@example.com", "pw-123456") // another account: a different database
-        assertNull(CloudPushLedger.get(app, "members/M1"))
+        CloudAccount.setEnabled(app, true)
+        assertEquals("abc", CloudPushLedger.get(app, "members/M1"))
 
-        CloudPushLedger.putAll(app, mapOf("members/M1" to "abc"))
-        CloudAccount.clear(app)
+        CloudPushLedger.clear(app)
         assertTrue(CloudPushLedger.snapshot(app).isEmpty())
     }
 
     @Test fun `without a cloud account the automatic sync does nothing`() = kotlinx.coroutines.runBlocking {
-        CloudAccount.clear(app)
+        CloudAccount.setEnabled(app, false)
         assertEquals(AutoCloudSync.Outcome.NotConfigured, AutoCloudSync.check(app))
+        CloudAccount.setEnabled(app, true)
     }
 
     // ── agent accounts: which generations are tried at login ────────────────────────────

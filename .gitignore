@@ -40,6 +40,9 @@ analysis/soft_archive/
 Thumbs.db
 .DS_Store
 
+# The app's one fixed cloud account (compiled into BuildConfig)
+android-app/cloud.properties
+
 # Firestore rules test project (local only)
 android-app/firestore-tests/node_modules/
 android-app/firestore-tests/firestore-debug.log

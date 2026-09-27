@@ -41,11 +41,10 @@ class AdminPinSyncTest {
         app = ApplicationProvider.getApplicationContext()
         prefs = AppPreferences(app)
         app.getSharedPreferences("jothivel_chits_prefs", Context.MODE_PRIVATE).edit().clear().commit()
-        CloudAccount.clear(app)
-        CloudAccount.save(app, "owner@example.com", "cloud-password")
+        CloudAccount.setEnabled(app, true)
     }
 
-    @After fun tearDown() = CloudAccount.clear(app)
+    @After fun tearDown() = CloudAccount.setEnabled(app, true)
 
     private fun hash(pin: String) = AppPreferences.hashPin(pin)
 
@@ -133,7 +132,7 @@ class AdminPinSyncTest {
     }
 
     @Test fun `without a cloud account nothing is synced`() = runBlocking {
-        CloudAccount.clear(app)
+        CloudAccount.setEnabled(app, false)
         val cloud = FakeStore()
         prefs.savePin("4826")
         assertEquals(AdminPinSync.Result.NotConfigured, AdminPinSync.sync(app, cloud))

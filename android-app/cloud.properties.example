@@ -1,0 +1,6 @@
+# Copy to cloud.properties (git-ignored). This is the ONE Firebase admin account this app is built
+# for - the account created in Firebase console > Authentication > Users. It is compiled into the
+# APK as BuildConfig.CLOUD_EMAIL / BuildConfig.CLOUD_PASSWORD, so it is deliberately kept out of the
+# source tree, and every install of this build shares it: nobody types an email or password in the app.
+cloudEmail=CHANGE_ME@example.com
+cloudPassword=CHANGE_ME

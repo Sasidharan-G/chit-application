@@ -501,13 +501,12 @@
     <string name="cloud_account_title">கிளவுட் கணக்கு</string>
     <string name="cloud_account_not_connected">இணைக்கப்படவில்லை - கிளவுட் ஒத்திசைவும் தொழிலாளர் வசதியும் நிறுத்தத்தில் உள்ளன</string>
     <string name="cloud_account_connected">%1$s ஆக இணைக்கப்பட்டது</string>
-    <string name="cloud_account_hint">Firebase console-இல் உருவாக்கிய நிர்வாகி மின்னஞ்சல் மற்றும் கடவுச்சொல்லை உள்ளிடவும். அவை இந்த போனில் மறைகுறியாக்கப்பட்டு சேமிக்கப்படும்.</string>
-    <string name="cloud_account_email">நிர்வாகி மின்னஞ்சல்</string>
-    <string name="cloud_account_password">கடவுச்சொல்</string>
     <string name="cloud_account_connect">இணை</string>
     <string name="cloud_account_disconnect">இந்த போனை துண்டி</string>
+    <string name="cloud_account_disconnect_confirm">%1$s-ஐ இந்த போனில் இருந்து துண்டிக்கவா? நீங்கள் மீண்டும் இணைக்கும் வரை கிளவுட் ஒத்திசைவும் தொழிலாளர் மேலாண்மையும் இங்கு நிறுத்தப்படும்.</string>
     <string name="cloud_account_ok">கிளவுட் கணக்கு இணைக்கப்பட்டது</string>
     <string name="cloud_account_disconnected">கிளவுட் கணக்கு துண்டிக்கப்பட்டது</string>
+    <string name="cloud_account_no_account">இந்த build-இல் cloud கணக்கு அமைக்கப்படவில்லை (cloud.properties இல்லை)</string>
     <string name="force_pin_title">உங்கள் சொந்த PIN-ஐ அமைக்கவும்</string>
     <string name="force_pin_message">இந்த போன் இன்னும் இயல்புநிலை PIN-ஐ பயன்படுத்துகிறது. தொடர்வதற்கு முன் புதிய 4 இலக்க PIN-ஐ தேர்வு செய்யவும்.</string>
     <string name="force_pin_weak">1234, 0000 அல்லது திரும்பத் திரும்ப வரும்/தொடர் எண் அல்லாத PIN-ஐ தேர்வு செய்யவும்</string>
@@ -518,11 +517,15 @@
     <string name="force_pin_have_account">வேறு போனில் இந்த app-ஐ ஏற்கனவே பயன்படுத்துகிறேன்</string>
     <string name="force_pin_back_to_new">புதிய PIN தேர்வு செய்</string>
     <string name="force_pin_existing_title">உங்கள் தற்போதைய PIN-ஐ பயன்படுத்துங்கள்</string>
-    <string name="force_pin_existing_message">Cloud மின்னஞ்சல், கடவுச்சொல் மற்றும் மற்றொரு போனில் பயன்படுத்தும் PIN-ஐ உள்ளிடவும்.</string>
+    <string name="force_pin_existing_message">மற்றொரு போனில் நீங்கள் ஏற்கனவே பயன்படுத்தும் PIN-ஐ உள்ளிடவும்.</string>
     <string name="force_pin_existing_pin">தற்போதைய PIN</string>
     <string name="force_pin_existing_button">தொடர்</string>
-    <string name="force_pin_existing_fill">மின்னஞ்சல், கடவுச்சொல், தற்போதைய PIN மூன்றையும் நிரப்பவும்</string>
+    <string name="force_pin_existing_fill">உங்கள் தற்போதைய 4 இலக்க PIN-ஐ உள்ளிடவும்</string>
     <string name="force_pin_existing_wrong">தற்போதைய PIN தவறு</string>
     <string name="force_pin_existing_none">Cloud-இல் இன்னும் PIN சேமிக்கப்படவில்லை. புதிய PIN தேர்வு செய்யவும்.</string>
     <string name="force_pin_existing_offline">இணையம் இல்லை. இணைத்து மீண்டும் முயற்சிக்கவும்.</string>
+    <string name="restore_pin_link">ஏற்கனவே இந்த app-ஐ பயன்படுத்துகிறீர்களா? PIN-ஐ மீட்டெடுக்கவும்</string>
+    <string name="restore_pin_title">உங்கள் PIN-ஐ மீட்டெடுக்கவும்</string>
+    <string name="restore_pin_message">மற்றொரு போனில் நீங்கள் ஏற்கனவே பயன்படுத்தும் PIN-ஐ உள்ளிடவும்.</string>
+    <string name="restore_pin_enter">உங்கள் 4 இலக்க PIN-ஐ உள்ளிடவும்</string>
 </resources>

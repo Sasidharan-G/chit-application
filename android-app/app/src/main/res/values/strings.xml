@@ -501,13 +501,12 @@
     <string name="cloud_account_title">Cloud account</string>
     <string name="cloud_account_not_connected">Not connected - cloud sync and labour are off</string>
     <string name="cloud_account_connected">Connected as %1$s</string>
-    <string name="cloud_account_hint">Enter the admin email and password created in the Firebase console. They are stored encrypted on this phone.</string>
-    <string name="cloud_account_email">Admin email</string>
-    <string name="cloud_account_password">Password</string>
     <string name="cloud_account_connect">Connect</string>
     <string name="cloud_account_disconnect">Disconnect this phone</string>
+    <string name="cloud_account_disconnect_confirm">Disconnect %1$s from this phone? Cloud sync and labour management will stop working here until you connect again.</string>
     <string name="cloud_account_ok">Cloud account connected</string>
     <string name="cloud_account_disconnected">Cloud account disconnected</string>
+    <string name="cloud_account_no_account">This build has no cloud account configured (cloud.properties is missing)</string>
     <string name="force_pin_title">Set your own PIN</string>
     <string name="force_pin_message">This phone is still using the default PIN. Choose a new 4-digit PIN before continuing.</string>
     <string name="force_pin_weak">Choose a PIN that is not 1234, 0000 or a repeated/sequential number</string>
@@ -518,11 +517,15 @@
     <string name="force_pin_have_account">I already use this app on another phone</string>
     <string name="force_pin_back_to_new">Choose a new PIN instead</string>
     <string name="force_pin_existing_title">Use your existing PIN</string>
-    <string name="force_pin_existing_message">Enter the cloud email and password, and the PIN you already use on your other phone.</string>
+    <string name="force_pin_existing_message">Enter the PIN you already use on your other phone.</string>
     <string name="force_pin_existing_pin">Existing PIN</string>
     <string name="force_pin_existing_button">Continue</string>
-    <string name="force_pin_existing_fill">Fill in the email, password and existing PIN</string>
+    <string name="force_pin_existing_fill">Enter your existing 4-digit PIN</string>
     <string name="force_pin_existing_wrong">Wrong existing PIN</string>
     <string name="force_pin_existing_none">No PIN is saved in the cloud yet. Choose a new PIN instead.</string>
     <string name="force_pin_existing_offline">No internet. Connect and try again.</string>
+    <string name="restore_pin_link">Already use this app? Restore with PIN</string>
+    <string name="restore_pin_title">Restore your PIN</string>
+    <string name="restore_pin_message">Enter the PIN you already use on your other phone.</string>
+    <string name="restore_pin_enter">Enter your 4-digit PIN</string>
 </resources>
