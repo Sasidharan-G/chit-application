@@ -38,6 +38,10 @@ object AdminAccount {
         return when (val signIn = FirebaseSetup.connectAdmin(context)) {
             is FirebaseSetup.AdminSignIn.Connected -> when (AdminPinSync.restoreOnNewPhone(context, pin)) {
                 AdminPinSync.Restore.Restored -> {
+                    // Proof of the PIN is proof enough: take this phone's session over even if the
+                    // cloud still thinks another one (possibly this very phone before a reinstall) is
+                    // live, instead of the admin getting locked out right after restoring.
+                    SessionGuard.forceClaim(context)
                     FirebaseSyncService.start(context)
                     AutoCloudSync.requestCheck(context)
                     RestoreOutcome.Restored

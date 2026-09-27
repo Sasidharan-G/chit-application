@@ -2,6 +2,7 @@ package com.jothivel.chits.data.firebase
 
 import android.content.Context
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
@@ -59,9 +60,26 @@ object SessionGuard {
         else -> Claim.Blocked(existing.deviceName.ifBlank { "another phone" })
     }
 
+    /** ANDROID_ID values known to be shared by many devices instead of unique to one - never trusted. */
+    private val BROKEN_ANDROID_IDS = setOf("9774d56d682e549c", "0000000000000000")
+
+    /**
+     * A phone that has not changed its identity from this account's point of view. Prefers
+     * [Settings.Secure.ANDROID_ID] - unlike an id this app generates itself, ANDROID_ID survives an
+     * uninstall/reinstall of THIS app (same device, same app signing key, same OS user), which is
+     * exactly "the same phone" for the one-login-one-phone rule; without it, reinstalling always looked
+     * like a brand new phone and locked the admin out of their own account. Falls back to a random id
+     * (persisted locally, so at least stable across launches) only when ANDROID_ID is blank or one of
+     * the handful of known-broken values a few devices return.
+     */
     fun deviceId(context: Context): String {
         val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        return prefs.getString(KEY_DEVICE_ID, null) ?: UUID.randomUUID().toString().also { prefs.edit().putString(KEY_DEVICE_ID, it).apply() }
+        prefs.getString(KEY_DEVICE_ID, null)?.let { return it }
+        val stable = runCatching { Settings.Secure.getString(context.applicationContext.contentResolver, Settings.Secure.ANDROID_ID) }
+            .getOrNull()?.takeIf { it.isNotBlank() && it !in BROKEN_ANDROID_IDS }
+            ?: UUID.randomUUID().toString()
+        prefs.edit().putString(KEY_DEVICE_ID, stable).apply()
+        return stable
     }
 
     private fun deviceName(): String = listOf(Build.MANUFACTURER, Build.MODEL).filter { !it.isNullOrBlank() }.joinToString(" ").take(60).ifBlank { "Android phone" }
@@ -92,6 +110,27 @@ object SessionGuard {
         } catch (e: Exception) {
             Log.w(TAG, "claim failed", e)
             Claim.Unknown
+        }
+    }
+
+    /**
+     * Takes the account over regardless of any other phone's record - used only right after the admin
+     * has proven ownership some other way (restoring with the PIN already in use, which only the real
+     * admin can type). A stale record left behind by an uninstall, a device whose stable id changed
+     * (factory reset, or a few OEMs' ANDROID_ID is not fully stable), or a genuine handover to a new
+     * phone are all recovered by this, instead of the admin being locked out of their own account.
+     */
+    suspend fun forceClaim(context: Context) {
+        val firestore = FirebaseSetup.firestoreOrNull(context) ?: return
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
+        try {
+            withTimeoutOrNull(NETWORK_TIMEOUT_MS) {
+                firestore.collection(COLLECTION).document(uid)
+                    .set(mapOf("deviceId" to deviceId(context), "deviceName" to deviceName(), "lastSeen" to FieldValue.serverTimestamp()))
+                    .await()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "forceClaim failed", e)
         }
     }
 

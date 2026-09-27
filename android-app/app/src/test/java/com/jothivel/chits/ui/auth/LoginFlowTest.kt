@@ -6,6 +6,7 @@ import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import com.jothivel.chits.data.firebase.AgentAuthRepository
 import com.jothivel.chits.data.firebase.AgentLoginResult
+import com.jothivel.chits.data.firebase.CloudAccount
 import com.jothivel.chits.utils.AppPreferences
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -29,6 +30,9 @@ class LoginFlowTest {
         prefs = AppPreferences(app)
         prefs.savePin("4826")
         app.getSharedPreferences("jvc_agent_login_attempts", Context.MODE_PRIVATE).edit().clear().apply()
+        // These tests exercise the PIN check itself, not the cloud one-device-login guard (see
+        // SessionGuardTest) - without this, a correct PIN would try to reach the real Firebase project.
+        CloudAccount.setEnabled(app, false)
     }
 
     /** The PIN check runs on a worker thread; let it finish and deliver its result to the main thread. */

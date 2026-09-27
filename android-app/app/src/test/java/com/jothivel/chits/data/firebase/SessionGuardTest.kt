@@ -51,13 +51,34 @@ class SessionGuardTest {
         assertEquals("Already logged in on another phone (another phone). Log out there first.", (SessionGuard.decide(other(1, name = ""), "phone-B", now) as Claim.Blocked).message)
     }
 
-    @Test fun `a phone keeps the same id between launches and two installs differ`() {
+    @Test fun `a phone keeps the same id between launches`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val first = SessionGuard.deviceId(app)
         assertEquals(first, SessionGuard.deviceId(app))
-        assertTrue(first.length >= 32)
-        app.getSharedPreferences("jvc_device", 0).edit().clear().commit()
-        assertNotEquals(first, SessionGuard.deviceId(app))
+        assertTrue(first.length >= 16)
+    }
+
+    @Test fun `a reinstall on the same physical phone keeps the same id (ANDROID_ID)`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        android.provider.Settings.Secure.putString(app.contentResolver, android.provider.Settings.Secure.ANDROID_ID, "hardware-id-abc123")
+        app.getSharedPreferences("jvc_device", 0).edit().clear().commit() // uninstall wipes this app's own storage
+        val afterInstall1 = SessionGuard.deviceId(app)
+        assertEquals("hardware-id-abc123", afterInstall1)
+
+        app.getSharedPreferences("jvc_device", 0).edit().clear().commit() // simulate an uninstall + reinstall
+        val afterInstall2 = SessionGuard.deviceId(app)
+        assertEquals("this is the whole point of the fix - the same phone must not look like a new one", afterInstall1, afterInstall2)
+    }
+
+    @Test fun `a blank or known-broken ANDROID_ID falls back to a random id, stable only per install`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        for (broken in listOf("", "9774d56d682e549c")) {
+            android.provider.Settings.Secure.putString(app.contentResolver, android.provider.Settings.Secure.ANDROID_ID, broken)
+            app.getSharedPreferences("jvc_device", 0).edit().clear().commit()
+            val id = SessionGuard.deviceId(app)
+            assertNotEquals(broken, id)
+            assertTrue(id.length >= 16)
+        }
     }
 
     @Test fun `cloud sync off means no blocking at admin login`() {
