@@ -503,6 +503,7 @@
     <string name="cloud_account_connected">%1$s ஆக இணைக்கப்பட்டது</string>
     <string name="cloud_account_connect">இணை</string>
     <string name="cloud_account_disconnect">இந்த போனை துண்டி</string>
+    <string name="cloud_account_connect_confirm">இந்த போனை %1$s என்ற பகிரப்பட்ட cloud கணக்குடன் இணைக்கவா? சிட்டுகள், வாடிக்கையாளர்கள் மற்றும் தொழிலாளர் தரவு அதனுடன் ஒத்திசைக்கப்படும்.</string>
     <string name="cloud_account_disconnect_confirm">%1$s-ஐ இந்த போனில் இருந்து துண்டிக்கவா? நீங்கள் மீண்டும் இணைக்கும் வரை கிளவுட் ஒத்திசைவும் தொழிலாளர் மேலாண்மையும் இங்கு நிறுத்தப்படும்.</string>
     <string name="cloud_account_ok">கிளவுட் கணக்கு இணைக்கப்பட்டது</string>
     <string name="cloud_account_disconnected">கிளவுட் கணக்கு துண்டிக்கப்பட்டது</string>

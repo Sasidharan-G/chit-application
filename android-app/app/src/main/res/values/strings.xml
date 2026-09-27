@@ -503,6 +503,7 @@
     <string name="cloud_account_connected">Connected as %1$s</string>
     <string name="cloud_account_connect">Connect</string>
     <string name="cloud_account_disconnect">Disconnect this phone</string>
+    <string name="cloud_account_connect_confirm">Connect this phone to the shared cloud account %1$s? Chits, customers and labour data will sync with it.</string>
     <string name="cloud_account_disconnect_confirm">Disconnect %1$s from this phone? Cloud sync and labour management will stop working here until you connect again.</string>
     <string name="cloud_account_ok">Cloud account connected</string>
     <string name="cloud_account_disconnected">Cloud account disconnected</string>

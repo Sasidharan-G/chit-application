@@ -55,14 +55,16 @@ import kotlinx.coroutines.withContext
 
 /**
  * Settings row for the app's one fixed cloud account ([AdminAccount]) - there is nothing to type any
- * more, so this is a one-tap switch: "Connect" signs this phone in, "Disconnect this phone" signs it
- * out and turns cloud sync off here. Cloud sync, restore and labour management do nothing while off.
+ * more, so tapping the row just opens a small screen naming that account: "Connect" signs this phone
+ * in, "Disconnect this phone" signs it out and turns cloud sync off here. Cloud sync, restore and
+ * labour management do nothing while off.
  */
 @Composable
 fun CloudAccountSection() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var refreshKey by remember { mutableIntStateOf(0) }
+    var showConnectConfirm by remember { mutableStateOf(false) }
     var showDisconnectConfirm by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     val connected by produceState(false, refreshKey, busy) {
@@ -91,6 +93,7 @@ fun CloudAccountSection() {
                     FirebaseSyncService.start(context)
                     AutoCloudSync.requestCheck(context)
                     Toast.makeText(context, if (pin == AdminPinSync.Result.Adopted) pinAdoptedToast else connectedToast, Toast.LENGTH_LONG).show()
+                    showConnectConfirm = false
                 }
                 is FirebaseSetup.AdminSignIn.Failed -> {
                     CloudAccount.setEnabled(context, false)
@@ -119,7 +122,7 @@ fun CloudAccountSection() {
     }
 
     Surface(
-        Modifier.fillMaxWidth().height(56.dp).clickable(enabled = !busy) { if (connected) showDisconnectConfirm = true else connect() },
+        Modifier.fillMaxWidth().height(56.dp).clickable(enabled = !busy) { if (connected) showDisconnectConfirm = true else showConnectConfirm = true },
         shape = RoundedCornerShape(10.dp), color = Color.White, border = BorderStroke(1.dp, DividerGray.copy(alpha = .8f))
     ) {
         Row(Modifier.padding(horizontal = 11.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -134,6 +137,22 @@ fun CloudAccountSection() {
             if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
             else Icon(Icons.Default.ChevronRight, null, tint = TextGray, modifier = Modifier.size(17.dp))
         }
+    }
+
+    if (showConnectConfirm) {
+        AlertDialog(
+            onDismissRequest = { if (!busy) showConnectConfirm = false },
+            icon = { Icon(Icons.Default.Cloud, null, tint = MaroonPrimary) },
+            title = { Text(stringResource(R.string.cloud_account_title)) },
+            text = { Text(stringResource(R.string.cloud_account_connect_confirm, AdminAccount.EMAIL)) },
+            confirmButton = {
+                Button(onClick = ::connect, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = MaroonPrimary)) {
+                    if (busy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                    else Text(stringResource(R.string.cloud_account_connect))
+                }
+            },
+            dismissButton = { TextButton(onClick = { showConnectConfirm = false }, enabled = !busy) { Text(stringResource(R.string.common_cancel)) } }
+        )
     }
 
     if (showDisconnectConfirm) {
